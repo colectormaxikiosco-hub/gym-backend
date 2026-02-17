@@ -30,6 +30,7 @@ export async function sendWelcomeWhatsApp(phone, username, password) {
     return { sent: false, error: "Teléfono no válido" }
   }
 
+  const siteUrl = "www.lifefitnesstrancas.com"
   const message = [
     "¡Bienvenido/a a Life Fitness!",
     "",
@@ -37,7 +38,9 @@ export async function sendWelcomeWhatsApp(phone, username, password) {
     `Usuario: ${username}`,
     `Contraseña: ${password}`,
     "",
-    "Ingresá a lifefitness.com para ver tu estado de membresía, avisos y más.",
+    `Ingresá a ${siteUrl} para ver tu estado de membresía, avisos y más.`,
+    "",
+    "Podés cambiar tu contraseña en la sección Perfil una vez que ingreses.",
     "",
     "— Life Fitness",
   ].join("\n")
