@@ -203,14 +203,33 @@ export const createMembership = async (req, res) => {
       })
     }
 
-    // Membresía "en vigor" = activa, ya iniciada y no vencida
+    // Obtener plan (duración para validar clase vs larga, y precio/nombre para crear membresía)
+    const [plansForValidation] = await connection.query(
+      "SELECT duration_days, price, name FROM plans WHERE id = ? AND active = TRUE",
+      [plan_id],
+    )
+    if (plansForValidation.length === 0) {
+      await connection.rollback()
+      return res.status(404).json({
+        success: false,
+        message: "Plan no encontrado o inactivo",
+      })
+    }
+    const newPlanDurationDays = Number(plansForValidation[0].duration_days) || 0
+    const isNewPlanClass = newPlanDurationDays <= 3
+
+    // Membresías activas en vigor (con duración del plan para saber si son "largas" o "clases")
     const [existingCurrent] = await connection.query(
-      `SELECT id, end_date FROM memberships 
-       WHERE client_id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() 
-       ORDER BY end_date DESC LIMIT 1`,
+      `SELECT m.id, m.end_date, p.duration_days
+       FROM memberships m
+       INNER JOIN plans p ON p.id = m.plan_id
+       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE()
+       ORDER BY m.end_date DESC`,
       [client_id],
     )
-    if (existingCurrent.length > 0) {
+    const hasLongActiveMembership = existingCurrent.some((row) => (Number(row.duration_days) || 0) >= 10)
+
+    if (existingCurrent.length > 0 && !isNewPlanClass) {
       const currentEnd = existingCurrent[0].end_date ? String(existingCurrent[0].end_date).split("T")[0] : null
       const newStart = start_date ? String(start_date).split("T")[0] : null
       const isRenewal = currentEnd && newStart && currentEnd === newStart
@@ -221,9 +240,13 @@ export const createMembership = async (req, res) => {
           message:
             "El cliente ya tiene una membresía en vigor. Para renovar o cambiar, la nueva membresía debe comenzar el mismo día en que vence la actual (" +
             currentEnd +
-            ").",
+            "). Si querés agregar solo una clase (plan por día), podés hacerlo sin perder la membresía actual.",
         })
       }
+    }
+    if (existingCurrent.length > 0 && isNewPlanClass && hasLongActiveMembership) {
+      // Cliente con membresía larga (ej. mensual) puede agregar una clase (plan corto) sin perder la actual
+      // No bloquear; permitir crear la nueva membresía de clase
     }
 
     const validPaymentMethods = ["cash", "transfer", "credit_card", "current_account"]
@@ -242,21 +265,7 @@ export const createMembership = async (req, res) => {
         : []
     }
 
-    // Obtener información del plan
-    const [plans] = await connection.query(
-      "SELECT duration_days, price, name FROM plans WHERE id = ? AND active = TRUE",
-      [plan_id],
-    )
-
-    if (plans.length === 0) {
-      await connection.rollback()
-      return res.status(404).json({
-        success: false,
-        message: "Plan no encontrado o inactivo",
-      })
-    }
-
-    const plan = plans[0]
+    const plan = plansForValidation[0]
     const planPrice = Math.round(Number(plan.price) * 100) / 100
 
     if (payments.length === 1 && payments[0].amount === 0) {
