@@ -191,7 +191,7 @@ export const createMembership = async (req, res) => {
     await connection.beginTransaction()
     console.log("[v0] Creando membresía con pago:", req.body)
 
-    const { client_id, plan_id, instructor_id: instructorIdParam, start_date, payment_method, payments: paymentsBody, notes } = req.body
+    const { client_id, plan_id, instructor_id: instructorIdParam, start_date, payment_method, payments: paymentsBody, discount: discountBody = 0, notes } = req.body
     const created_by = req.user.id
 
     const startDateParsed = start_date ? new Date(start_date) : null
@@ -267,9 +267,11 @@ export const createMembership = async (req, res) => {
 
     const plan = plansForValidation[0]
     const planPrice = Math.round(Number(plan.price) * 100) / 100
+    const discountAmount = Math.max(0, Math.round((Number(discountBody) || 0) * 100) / 100)
+    const amountToPay = Math.max(0, Math.round((planPrice - discountAmount) * 100) / 100)
 
     if (payments.length === 1 && payments[0].amount === 0) {
-      payments[0].amount = planPrice
+      payments[0].amount = amountToPay
     }
     if (payments.length === 0) {
       await connection.rollback()
@@ -279,11 +281,11 @@ export const createMembership = async (req, res) => {
       })
     }
     const sumPayments = Math.round(payments.reduce((s, p) => s + p.amount, 0) * 100) / 100
-    if (Math.abs(sumPayments - planPrice) > 0.01) {
+    if (Math.abs(sumPayments - amountToPay) > 0.01) {
       await connection.rollback()
       return res.status(400).json({
         success: false,
-        message: `Los pagos deben sumar exactamente el precio del plan (${planPrice}).`,
+        message: `Los pagos deben sumar exactamente el monto a pagar (${amountToPay}).`,
       })
     }
     const hasCurrentAccount = payments.some((p) => p.payment_method === "current_account")
@@ -351,8 +353,8 @@ export const createMembership = async (req, res) => {
 
     const [membershipResult] = await connection.query(
       `INSERT INTO memberships 
-       (client_id, plan_id, instructor_id, start_date, end_date, payment_method, payment_status, paid_at, status, notes, created_by) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+       (client_id, plan_id, instructor_id, start_date, end_date, payment_method, payment_status, paid_at, status, notes, discount, created_by) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       [
         client_id,
         plan_id,
@@ -363,6 +365,7 @@ export const createMembership = async (req, res) => {
         payment_status,
         paidAt,
         notes || null,
+        discountAmount,
         created_by,
       ],
     )
@@ -517,6 +520,7 @@ export const cancelMembership = async (req, res) => {
     // Obtener membresía con datos necesarios para revertir
     const [rows] = await connection.query(
       `SELECT m.id, m.client_id, m.plan_id, m.status, m.payment_method, m.cash_movement_id,
+              COALESCE(m.discount, 0) as discount,
               c.name as client_name, p.name as plan_name, p.price as plan_price
        FROM memberships m
        INNER JOIN clients c ON c.id = m.client_id
@@ -608,16 +612,18 @@ export const cancelMembership = async (req, res) => {
     } else {
       if (membership.payment_method === "current_account") {
         const planPrice = Number.parseFloat(membership.plan_price)
+        const discount = Number.parseFloat(membership.discount) || 0
+        const amountPaid = Math.max(0, Math.round((planPrice - discount) * 100) / 100)
         const [lastMovement] = await connection.query(
           `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
           [membership.client_id],
         )
         const currentBalance = lastMovement.length > 0 ? Number.parseFloat(lastMovement[0].balance) : 0
-        const newBalance = currentBalance - planPrice
+        const newBalance = Math.round((currentBalance - amountPaid) * 100) / 100
         await connection.query(
           `INSERT INTO current_account (client_id, membership_id, type, amount, description, balance, created_by)
            VALUES (?, ?, 'credit', ?, ?, ?, ?)`,
-          [membership.client_id, id, planPrice, `Cancelación membresía - ${membership.plan_name}`, newBalance, created_by],
+          [membership.client_id, id, amountPaid, `Cancelación membresía - ${membership.plan_name}`, newBalance, created_by],
         )
         affectsCurrentAccount = true
       }
