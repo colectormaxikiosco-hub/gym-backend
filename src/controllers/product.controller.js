@@ -256,22 +256,36 @@ export const updateProduct = async (req, res) => {
 export const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params
-    const [result] = await pool.query("UPDATE products SET active = FALSE WHERE id = ?", [id])
-    if (result.affectedRows === 0) {
+
+    const [product] = await pool.query("SELECT id FROM products WHERE id = ?", [id])
+    if (product.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Producto no encontrado",
       })
     }
+
+    const [sales] = await pool.query(
+      "SELECT id FROM sale_items WHERE product_id = ? LIMIT 1",
+      [id]
+    )
+    if (sales.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No se puede eliminar el producto porque tiene ventas asociadas. Solo se pueden eliminar productos sin ventas.",
+      })
+    }
+
+    await pool.query("DELETE FROM products WHERE id = ?", [id])
     res.json({
       success: true,
-      message: "Producto desactivado correctamente",
+      message: "Producto eliminado correctamente",
     })
   } catch (error) {
-    console.error("Error al desactivar producto:", error)
+    console.error("Error al eliminar producto:", error)
     res.status(500).json({
       success: false,
-      message: "Error al desactivar producto",
+      message: "Error al eliminar producto",
     })
   }
 }

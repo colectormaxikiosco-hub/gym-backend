@@ -33,6 +33,7 @@ export const updateProfile = async (req, res, next) => {
   try {
     const userId = req.user.id
     const { username, name, email } = req.body
+    const emailNormalized = (email != null && String(email).trim() !== "") ? String(email).trim() : null
 
     if (!username || !name) {
       return res.status(400).json({
@@ -51,7 +52,17 @@ export const updateProfile = async (req, res, next) => {
       })
     }
 
-    await pool.query("UPDATE users SET username = ?, name = ?, email = ? WHERE id = ?", [username, name, email, userId])
+    if (emailNormalized) {
+      const [existingEmail] = await pool.query("SELECT id FROM users WHERE email = ? AND id != ?", [emailNormalized, userId])
+      if (existingEmail.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Ya existe otro usuario con ese email",
+        })
+      }
+    }
+
+    await pool.query("UPDATE users SET username = ?, name = ?, email = ? WHERE id = ?", [username, name, emailNormalized, userId])
 
     const [updatedUser] = await pool.query(
       "SELECT id, username, name, email, role, created_at, last_login FROM users WHERE id = ?",
@@ -141,6 +152,7 @@ export const getAllUsers = async (req, res, next) => {
 export const createUser = async (req, res, next) => {
   try {
     const { username, password, name, email, role } = req.body
+    const emailNormalized = (email != null && String(email).trim() !== "") ? String(email).trim() : null
 
     if (!username || !password || !name || !role) {
       return res.status(400).json({
@@ -172,11 +184,21 @@ export const createUser = async (req, res, next) => {
       })
     }
 
+    if (emailNormalized) {
+      const [existingEmail] = await pool.query("SELECT id FROM users WHERE email = ?", [emailNormalized])
+      if (existingEmail.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Ya existe un usuario con ese email",
+        })
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10)
 
     const [result] = await pool.query(
       "INSERT INTO users (username, password, name, email, role) VALUES (?, ?, ?, ?, ?)",
-      [username, hashedPassword, name, email, role],
+      [username, hashedPassword, name, emailNormalized, role],
     )
 
     const [newUser] = await pool.query(
@@ -190,7 +212,13 @@ export const createUser = async (req, res, next) => {
       data: newUser[0],
     })
   } catch (error) {
-    console.error("Error al crear usuario")
+    console.error("Error al crear usuario", error)
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        success: false,
+        message: "Ya existe un usuario con ese email o nombre de usuario",
+      })
+    }
     next(error)
   }
 }
@@ -200,6 +228,7 @@ export const updateUser = async (req, res, next) => {
   try {
     const { id } = req.params
     const { username, name, email, role, active } = req.body
+    const emailNormalized = (email != null && String(email).trim() !== "") ? String(email).trim() : null
 
     if (!username || !name || !role) {
       return res.status(400).json({
@@ -224,10 +253,20 @@ export const updateUser = async (req, res, next) => {
       })
     }
 
+    if (emailNormalized) {
+      const [existingEmail] = await pool.query("SELECT id FROM users WHERE email = ? AND id != ?", [emailNormalized, id])
+      if (existingEmail.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Ya existe otro usuario con ese email",
+        })
+      }
+    }
+
     await pool.query("UPDATE users SET username = ?, name = ?, email = ?, role = ?, active = ? WHERE id = ?", [
       username,
       name,
-      email,
+      emailNormalized,
       role,
       active !== undefined ? active : true,
       id,
@@ -251,7 +290,13 @@ export const updateUser = async (req, res, next) => {
       data: updatedUser[0],
     })
   } catch (error) {
-    console.error("Error al actualizar usuario")
+    console.error("Error al actualizar usuario", error)
+    if (error.code === "ER_DUP_ENTRY") {
+      return res.status(400).json({
+        success: false,
+        message: "Ya existe otro usuario con ese email",
+      })
+    }
     next(error)
   }
 }

@@ -20,7 +20,7 @@ export const getAllSales = async (req, res) => {
       whereParts.push(" AND DATE(s.created_at) <= ?")
       params.push(dateTo)
     }
-    if (paymentMethod && ["cash", "transfer", "credit_card", "current_account"].includes(paymentMethod)) {
+    if (paymentMethod && ["cash", "transfer", "credit_card", "current_account", "combined"].includes(paymentMethod)) {
       whereParts.push(" AND s.payment_method = ?")
       params.push(paymentMethod)
     }
@@ -82,7 +82,8 @@ export const getSaleById = async (req, res) => {
       "SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id",
       [id]
     )
-    const sale = { ...sales[0], items }
+    const [payments] = await pool.query("SELECT * FROM sale_payments WHERE sale_id = ? ORDER BY id", [id])
+    const sale = { ...sales[0], items, payments: payments || [] }
     res.json({
       success: true,
       data: sale,
@@ -99,7 +100,7 @@ export const getSaleById = async (req, res) => {
 export const createSale = async (req, res) => {
   const connection = await pool.getConnection()
   try {
-    const { items, payment_method, discount = 0, client_id = null, notes = null } = req.body
+    const { items, payment_method, payments: paymentsBody, discount = 0, client_id = null, notes = null } = req.body
     const userId = req.user.id
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -107,30 +108,6 @@ export const createSale = async (req, res) => {
         success: false,
         message: "La venta debe tener al menos un producto",
       })
-    }
-    if (!payment_method || !["cash", "transfer", "credit_card", "current_account"].includes(payment_method)) {
-      return res.status(400).json({
-        success: false,
-        message: "Método de pago inválido",
-      })
-    }
-    if (payment_method === "current_account") {
-      if (!client_id) {
-        return res.status(400).json({
-          success: false,
-          message: "Para venta a cuenta corriente debe indicar el cliente",
-        })
-      }
-      const [clientRow] = await connection.query(
-        "SELECT id FROM clients WHERE id = ? AND active = 1",
-        [client_id]
-      )
-      if (clientRow.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Cliente no encontrado o inactivo",
-        })
-      }
     }
 
     await connection.beginTransaction()
@@ -140,7 +117,7 @@ export const createSale = async (req, res) => {
       await connection.rollback()
       return res.status(400).json({
         success: false,
-        message: "Items inválidos",
+        message: "Items inv?lidos",
       })
     }
 
@@ -196,16 +173,86 @@ export const createSale = async (req, res) => {
     const discountAmount = Math.max(0, Number(discount) || 0)
     const total = Math.round((subtotal - discountAmount) * 100) / 100
 
+    const validMethods = ["cash", "transfer", "credit_card", "current_account"]
+    let payments = []
+    if (paymentsBody && Array.isArray(paymentsBody) && paymentsBody.length > 0) {
+      for (const p of paymentsBody) {
+        const method = (p.payment_method || "").trim()
+        const amount = Math.round(Number(p.amount) * 100) / 100
+        if (!validMethods.includes(method) || amount <= 0) continue
+        payments.push({ payment_method: method, amount })
+      }
+      const sumPayments = Math.round(payments.reduce((s, p) => s + p.amount, 0) * 100) / 100
+      if (payments.length === 0 || Math.abs(sumPayments - total) > 0.01) {
+        await connection.rollback()
+        return res.status(400).json({
+          success: false,
+          message: "Los pagos deben sumar exactamente el total de la venta.",
+        })
+      }
+      const hasCurrentAccount = payments.some((p) => p.payment_method === "current_account")
+      if (hasCurrentAccount && !client_id) {
+        await connection.rollback()
+        return res.status(400).json({
+          success: false,
+          message: "Para usar cuenta corriente debe indicar el cliente.",
+        })
+      }
+      if (client_id && hasCurrentAccount) {
+        const [clientRow] = await connection.query(
+          "SELECT id FROM clients WHERE id = ? AND active = 1",
+          [client_id]
+        )
+        if (clientRow.length === 0) {
+          await connection.rollback()
+          return res.status(400).json({
+            success: false,
+            message: "Cliente no encontrado o inactivo",
+          })
+        }
+      }
+    } else {
+      if (!payment_method || !validMethods.includes(payment_method)) {
+        await connection.rollback()
+        return res.status(400).json({
+          success: false,
+          message: "M?todo de pago inv?lido",
+        })
+      }
+      if (payment_method === "current_account") {
+        if (!client_id) {
+          await connection.rollback()
+          return res.status(400).json({
+            success: false,
+            message: "Para venta a cuenta corriente debe indicar el cliente",
+          })
+        }
+        const [clientRow] = await connection.query(
+          "SELECT id FROM clients WHERE id = ? AND active = 1",
+          [client_id]
+        )
+        if (clientRow.length === 0) {
+          await connection.rollback()
+          return res.status(400).json({
+            success: false,
+            message: "Cliente no encontrado o inactivo",
+          })
+        }
+      }
+      payments = [{ payment_method, amount: total }]
+    }
+
     let cashSessionId = null
     const [activeSession] = await connection.query(
       "SELECT id FROM cash_sessions WHERE status = 'open' ORDER BY opened_at DESC LIMIT 1"
     )
     if (activeSession.length > 0) cashSessionId = activeSession[0].id
 
+    const salePaymentMethod = payments.length === 1 ? payments[0].payment_method : "combined"
     const [saleResult] = await connection.query(
       `INSERT INTO sales (user_id, client_id, cash_session_id, payment_method, subtotal, discount, total, status, notes)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'completed', ?)`,
-      [userId, client_id || null, cashSessionId, payment_method, subtotal, discountAmount, total, notes?.trim() || null]
+      [userId, client_id || null, cashSessionId, salePaymentMethod, subtotal, discountAmount, total, notes?.trim() || null]
     )
     const saleId = saleResult.insertId
 
@@ -230,29 +277,38 @@ export const createSale = async (req, res) => {
       ])
     }
 
-    let cashMovementId = null
-    if (["cash", "transfer", "credit_card"].includes(payment_method) && cashSessionId && total > 0) {
-      const [movResult] = await connection.query(
-        `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
-         VALUES (?, 'sale', ?, ?, ?, ?)`,
-        [cashSessionId, payment_method, total, `Venta #${saleId}`, userId]
-      )
-      cashMovementId = movResult.insertId
-      await connection.query("UPDATE sales SET cash_movement_id = ? WHERE id = ?", [cashMovementId, saleId])
-    }
-
-    if (payment_method === "current_account" && client_id && total > 0) {
-      const [lastMovement] = await connection.query(
-        `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
-        [client_id]
-      )
-      const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
-      const newBalance = Math.round((currentBalance + total) * 100) / 100
+    let firstCashMovementId = null
+    for (const p of payments) {
+      let cashMovementId = null
+      if (["cash", "transfer", "credit_card"].includes(p.payment_method) && cashSessionId && p.amount > 0) {
+        const [movResult] = await connection.query(
+          `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+           VALUES (?, 'sale', ?, ?, ?, ?)`,
+          [cashSessionId, p.payment_method, p.amount, `Venta #${saleId}`, userId]
+        )
+        cashMovementId = movResult.insertId
+        if (!firstCashMovementId) firstCashMovementId = cashMovementId
+      }
+      if (p.payment_method === "current_account" && client_id && p.amount > 0) {
+        const [lastMovement] = await connection.query(
+          `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+          [client_id]
+        )
+        const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
+        const newBalance = Math.round((currentBalance + p.amount) * 100) / 100
+        await connection.query(
+          `INSERT INTO current_account (client_id, type, amount, description, balance, created_by)
+           VALUES (?, 'debit', ?, ?, ?, ?)`,
+          [client_id, p.amount, `Venta #${saleId}`, newBalance, userId]
+        )
+      }
       await connection.query(
-        `INSERT INTO current_account (client_id, type, amount, description, balance, created_by)
-         VALUES (?, 'debit', ?, ?, ?, ?)`,
-        [client_id, total, `Venta #${saleId}`, newBalance, userId]
+        `INSERT INTO sale_payments (sale_id, payment_method, amount, cash_movement_id) VALUES (?, ?, ?, ?)`,
+        [saleId, p.payment_method, p.amount, cashMovementId]
       )
+    }
+    if (firstCashMovementId) {
+      await connection.query("UPDATE sales SET cash_movement_id = ? WHERE id = ?", [firstCashMovementId, saleId])
     }
 
     await connection.commit()
@@ -262,7 +318,8 @@ export const createSale = async (req, res) => {
       [saleId]
     )
     const [newItems] = await connection.query("SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id", [saleId])
-    const saleData = { ...newSale[0], items: newItems }
+    const [salePayments] = await connection.query("SELECT * FROM sale_payments WHERE sale_id = ? ORDER BY id", [saleId])
+    const saleData = { ...newSale[0], items: newItems, payments: salePayments }
 
     res.status(201).json({
       success: true,
@@ -360,40 +417,71 @@ export const cancelSale = async (req, res) => {
       )
     }
 
-    if (sale.cash_movement_id) {
-      const [movements] = await connection.query(
-        "SELECT amount, payment_method FROM cash_movements WHERE id = ?",
-        [sale.cash_movement_id]
-      )
-      if (movements.length > 0) {
-        const amount = Number(movements[0].amount)
-        const paymentMethod = movements[0].payment_method || "cash"
+    const [salePaymentsRows] = await connection.query(
+      "SELECT payment_method, amount, cash_movement_id FROM sale_payments WHERE sale_id = ?",
+      [id]
+    )
+
+    if (salePaymentsRows.length > 0) {
+      for (const row of salePaymentsRows) {
+        if (row.cash_movement_id) {
+          const [movements] = await connection.query(
+            "SELECT amount, payment_method FROM cash_movements WHERE id = ?",
+            [row.cash_movement_id]
+          )
+          if (movements.length > 0) {
+            const amount = Number(movements[0].amount)
+            const paymentMethod = movements[0].payment_method || "cash"
+            await connection.query(
+              `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+               VALUES (?, 'expense', ?, ?, ?, ?)`,
+              [currentSessionId, paymentMethod, amount, `Cancelaci?n venta #${id}`, userId]
+            )
+          }
+        }
+        if (row.payment_method === "current_account" && sale.client_id && Number(row.amount) > 0) {
+          const [lastMovement] = await connection.query(
+            `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+            [sale.client_id]
+          )
+          const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
+          const newBalance = Math.round((currentBalance - Number(row.amount)) * 100) / 100
+          await connection.query(
+            `INSERT INTO current_account (client_id, type, amount, description, balance, created_by)
+             VALUES (?, 'credit', ?, ?, ?, ?)`,
+            [sale.client_id, Number(row.amount), `Cancelaci?n venta #${id}`, newBalance, userId]
+          )
+        }
+      }
+    } else {
+      if (sale.cash_movement_id) {
+        const [movements] = await connection.query(
+          "SELECT amount, payment_method FROM cash_movements WHERE id = ?",
+          [sale.cash_movement_id]
+        )
+        if (movements.length > 0) {
+          const amount = Number(movements[0].amount)
+          const paymentMethod = movements[0].payment_method || "cash"
+          await connection.query(
+            `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+             VALUES (?, 'expense', ?, ?, ?, ?)`,
+            [currentSessionId, paymentMethod, amount, `Cancelaci?n venta #${id}`, userId]
+          )
+        }
+      }
+      if (sale.payment_method === "current_account" && sale.client_id && sale.total > 0) {
+        const [lastMovement] = await connection.query(
+          `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+          [sale.client_id]
+        )
+        const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
+        const newBalance = Math.round((currentBalance - Number(sale.total)) * 100) / 100
         await connection.query(
-          `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
-           VALUES (?, 'expense', ?, ?, ?, ?)`,
-          [
-            currentSessionId,
-            paymentMethod,
-            amount,
-            `Cancelación venta #${id}`,
-            userId,
-          ]
+          `INSERT INTO current_account (client_id, type, amount, description, balance, created_by)
+           VALUES (?, 'credit', ?, ?, ?, ?)`,
+          [sale.client_id, Number(sale.total), `Cancelaci?n venta #${id}`, newBalance, userId]
         )
       }
-    }
-
-    if (sale.payment_method === "current_account" && sale.client_id && sale.total > 0) {
-      const [lastMovement] = await connection.query(
-        `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
-        [sale.client_id]
-      )
-      const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
-      const newBalance = Math.round((currentBalance - Number(sale.total)) * 100) / 100
-      await connection.query(
-        `INSERT INTO current_account (client_id, type, amount, description, balance, created_by)
-         VALUES (?, 'credit', ?, ?, ?, ?)`,
-        [sale.client_id, Number(sale.total), `Cancelación venta #${id}`, newBalance, userId]
-      )
     }
 
     await connection.query("UPDATE sales SET status = 'cancelled' WHERE id = ?", [id])

@@ -191,7 +191,7 @@ export const createMembership = async (req, res) => {
     await connection.beginTransaction()
     console.log("[v0] Creando membresía con pago:", req.body)
 
-    const { client_id, plan_id, instructor_id: instructorIdParam, start_date, payment_method, notes } = req.body
+    const { client_id, plan_id, instructor_id: instructorIdParam, start_date, payment_method, payments: paymentsBody, notes } = req.body
     const created_by = req.user.id
 
     const startDateParsed = start_date ? new Date(start_date) : null
@@ -226,16 +226,20 @@ export const createMembership = async (req, res) => {
       }
     }
 
-    if (payment_method !== "current_account") {
-      const [activeSessions] = await connection.query("SELECT id FROM cash_sessions WHERE status = 'open' LIMIT 1")
-
-      if (activeSessions.length === 0) {
-        await connection.rollback()
-        return res.status(400).json({
-          success: false,
-          message: "No hay una sesión de caja abierta. Debe abrir caja primero.",
-        })
+    const validPaymentMethods = ["cash", "transfer", "credit_card", "current_account"]
+    let payments = []
+    if (paymentsBody && Array.isArray(paymentsBody) && paymentsBody.length > 0) {
+      for (const p of paymentsBody) {
+        const method = (p.payment_method || "").trim()
+        const amount = Math.round(Number(p.amount) * 100) / 100
+        if (!validPaymentMethods.includes(method) || amount <= 0) continue
+        payments.push({ payment_method: method, amount })
       }
+    }
+    if (payments.length === 0) {
+      payments = payment_method && validPaymentMethods.includes(payment_method)
+        ? [{ payment_method, amount: 0 }]
+        : []
     }
 
     // Obtener información del plan
@@ -253,6 +257,38 @@ export const createMembership = async (req, res) => {
     }
 
     const plan = plans[0]
+    const planPrice = Math.round(Number(plan.price) * 100) / 100
+
+    if (payments.length === 1 && payments[0].amount === 0) {
+      payments[0].amount = planPrice
+    }
+    if (payments.length === 0) {
+      await connection.rollback()
+      return res.status(400).json({
+        success: false,
+        message: "Debe indicar método de pago o pagos combinados.",
+      })
+    }
+    const sumPayments = Math.round(payments.reduce((s, p) => s + p.amount, 0) * 100) / 100
+    if (Math.abs(sumPayments - planPrice) > 0.01) {
+      await connection.rollback()
+      return res.status(400).json({
+        success: false,
+        message: `Los pagos deben sumar exactamente el precio del plan (${planPrice}).`,
+      })
+    }
+    const hasCurrentAccount = payments.some((p) => p.payment_method === "current_account")
+    const hasCashPayment = payments.some((p) => ["cash", "transfer", "credit_card"].includes(p.payment_method))
+    if (hasCashPayment) {
+      const [activeSessions] = await connection.query("SELECT id FROM cash_sessions WHERE status = 'open' LIMIT 1")
+      if (activeSessions.length === 0) {
+        await connection.rollback()
+        return res.status(400).json({
+          success: false,
+          message: "No hay una sesión de caja abierta. Debe abrir caja primero.",
+        })
+      }
+    }
 
     // Obtener instructores del plan
     const [planInstructors] = await connection.query(
@@ -300,7 +336,9 @@ export const createMembership = async (req, res) => {
     const endDate = new Date(startDate)
     endDate.setDate(endDate.getDate() + plan.duration_days)
 
-    const payment_status = payment_method === "current_account" ? "pending" : "paid"
+    const membershipPaymentMethod = payments.length === 1 ? payments[0].payment_method : "combined"
+    const payment_status = hasCurrentAccount ? "pending" : "paid"
+    const paidAt = hasCurrentAccount ? null : new Date()
 
     const [membershipResult] = await connection.query(
       `INSERT INTO memberships 
@@ -312,55 +350,49 @@ export const createMembership = async (req, res) => {
         finalInstructorId,
         start_date,
         endDate.toISOString().split("T")[0],
-        payment_method,
+        membershipPaymentMethod,
         payment_status,
-        payment_method === "current_account" ? null : new Date(),
+        paidAt,
         notes || null,
         created_by,
       ],
     )
 
     const membership_id = membershipResult.insertId
+    let firstCashMovementId = null
+    const [activeSessions] = await connection.query("SELECT id FROM cash_sessions WHERE status = 'open' LIMIT 1")
+    const cash_session_id = activeSessions.length > 0 ? activeSessions[0].id : null
 
-    if (payment_method === "current_account") {
-      // Obtener saldo actual del cliente
-      const [lastMovement] = await connection.query(
-        `SELECT balance FROM current_account 
-         WHERE client_id = ? 
-         ORDER BY created_at DESC 
-         LIMIT 1`,
-        [client_id],
-      )
-
-      const currentBalance = lastMovement.length > 0 ? Number.parseFloat(lastMovement[0].balance) : 0
-      const newBalance = currentBalance + Number.parseFloat(plan.price)
-
-      // Registrar deuda en cuenta corriente
+    for (const p of payments) {
+      let cashMovementId = null
+      if (p.payment_method === "current_account") {
+        const [lastMovement] = await connection.query(
+          `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+          [client_id],
+        )
+        const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
+        const newBalance = Math.round((currentBalance + p.amount) * 100) / 100
+        await connection.query(
+          `INSERT INTO current_account (client_id, membership_id, type, amount, description, balance, created_by)
+           VALUES (?, ?, 'debit', ?, ?, ?, ?)`,
+          [client_id, membership_id, p.amount, `Membresía - ${plan.name}`, newBalance, created_by],
+        )
+      } else if (cash_session_id && p.amount > 0) {
+        const [movementResult] = await connection.query(
+          `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+           VALUES (?, 'membership_payment', ?, ?, ?, ?)`,
+          [cash_session_id, p.payment_method, p.amount, `Pago de membresía - ${plan.name}`, created_by],
+        )
+        cashMovementId = movementResult.insertId
+        if (!firstCashMovementId) firstCashMovementId = cashMovementId
+      }
       await connection.query(
-        `INSERT INTO current_account 
-         (client_id, membership_id, type, amount, description, balance, created_by)
-         VALUES (?, ?, 'debit', ?, ?, ?, ?)`,
-        [client_id, membership_id, plan.price, `Membresía - ${plan.name}`, newBalance, created_by],
+        `INSERT INTO membership_payments (membership_id, payment_method, amount, cash_movement_id) VALUES (?, ?, ?, ?)`,
+        [membership_id, p.payment_method, p.amount, cashMovementId],
       )
-
-      console.log("[v0] Deuda registrada en cuenta corriente del cliente")
-    } else {
-      const [activeSessions] = await connection.query("SELECT id FROM cash_sessions WHERE status = 'open' LIMIT 1")
-      const cash_session_id = activeSessions[0].id
-
-      const [movementResult] = await connection.query(
-        `INSERT INTO cash_movements 
-         (cash_session_id, type, payment_method, amount, description, created_by) 
-         VALUES (?, 'membership_payment', ?, ?, ?, ?)`,
-        [cash_session_id, payment_method, plan.price, `Pago de membresía - ${plan.name}`, created_by],
-      )
-
-      await connection.query("UPDATE memberships SET cash_movement_id = ? WHERE id = ?", [
-        movementResult.insertId,
-        membership_id,
-      ])
-
-      console.log("[v0] Pago registrado en caja con método:", payment_method)
+    }
+    if (firstCashMovementId) {
+      await connection.query("UPDATE memberships SET cash_movement_id = ? WHERE id = ?", [firstCashMovementId, membership_id])
     }
 
     // Plan de 1 día: registrar entrada automáticamente (es un solo uso)
@@ -509,68 +541,101 @@ export const cancelMembership = async (req, res) => {
     let affectsCash = false
     let affectsCurrentAccount = false
 
-    // 1) Si pagó con cuenta corriente: registrar crédito (reversión de la deuda)
-    if (membership.payment_method === "current_account") {
-      const planPrice = Number.parseFloat(membership.plan_price)
+    const [paymentRows] = await connection.query(
+      "SELECT payment_method, amount, cash_movement_id FROM membership_payments WHERE membership_id = ?",
+      [id],
+    )
 
-      const [lastMovement] = await connection.query(
-        `SELECT balance FROM current_account 
-         WHERE client_id = ? 
-         ORDER BY created_at DESC 
-         LIMIT 1`,
-        [membership.client_id],
-      )
-      const currentBalance = lastMovement.length > 0 ? Number.parseFloat(lastMovement[0].balance) : 0
-      const newBalance = currentBalance - planPrice
-
-      await connection.query(
-        `INSERT INTO current_account 
-         (client_id, membership_id, type, amount, description, balance, created_by)
-         VALUES (?, ?, 'credit', ?, ?, ?, ?)`,
-        [
-          membership.client_id,
-          id,
-          planPrice,
-          `Cancelación membresía - ${membership.plan_name}`,
-          newBalance,
-          created_by,
-        ],
-      )
-      affectsCurrentAccount = true
-    }
-
-    // 2) Si tiene movimiento de caja: solo revertir en caja si la sesión sigue abierta
-    if (membership.cash_movement_id) {
-      const [movements] = await connection.query(
-        `SELECT cm.amount, cm.payment_method, cm.cash_session_id 
-         FROM cash_movements cm 
-         WHERE cm.id = ?`,
-        [membership.cash_movement_id],
-      )
-
-      if (movements.length > 0) {
-        const [sessions] = await connection.query(
-          `SELECT id, status FROM cash_sessions WHERE id = ?`,
-          [movements[0].cash_session_id],
-        )
-
-        if (sessions.length > 0 && sessions[0].status === "open") {
-          const amount = Number.parseFloat(movements[0].amount)
-          const paymentMethod = movements[0].payment_method || "cash"
-
+    if (paymentRows.length > 0) {
+      for (const row of paymentRows) {
+        if (row.payment_method === "current_account" && Number(row.amount) > 0) {
+          const [lastMovement] = await connection.query(
+            `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+            [membership.client_id],
+          )
+          const currentBalance = lastMovement.length > 0 ? Number(lastMovement[0].balance) : 0
+          const newBalance = Math.round((currentBalance - Number(row.amount)) * 100) / 100
           await connection.query(
-            `INSERT INTO cash_movements 
-             (cash_session_id, type, payment_method, amount, description, created_by) 
-             VALUES (?, 'expense', ?, ?, ?, ?)`,
+            `INSERT INTO current_account (client_id, membership_id, type, amount, description, balance, created_by)
+             VALUES (?, ?, 'credit', ?, ?, ?, ?)`,
             [
-              movements[0].cash_session_id,
-              paymentMethod,
-              amount,
-              `Cancelación membresía #${id} - ${membership.client_name} - ${membership.plan_name}`,
+              membership.client_id,
+              id,
+              Number(row.amount),
+              `Cancelación membresía - ${membership.plan_name}`,
+              newBalance,
               created_by,
             ],
           )
-          affectsCash = true
+          affectsCurrentAccount = true
+        }
+        if (row.cash_movement_id) {
+          const [movements] = await connection.query(
+            "SELECT amount, payment_method, cash_session_id FROM cash_movements WHERE id = ?",
+            [row.cash_movement_id],
+          )
+          if (movements.length > 0) {
+            const [sessions] = await connection.query(
+              "SELECT id, status FROM cash_sessions WHERE id = ?",
+              [movements[0].cash_session_id],
+            )
+            if (sessions.length > 0 && sessions[0].status === "open") {
+              await connection.query(
+                `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+                 VALUES (?, 'expense', ?, ?, ?, ?)`,
+                [
+                  movements[0].cash_session_id,
+                  movements[0].payment_method || "cash",
+                  Number(movements[0].amount),
+                  `Cancelación membresía #${id} - ${membership.client_name} - ${membership.plan_name}`,
+                  created_by,
+                ],
+              )
+              affectsCash = true
+            }
+          }
+        }
+      }
+    } else {
+      if (membership.payment_method === "current_account") {
+        const planPrice = Number.parseFloat(membership.plan_price)
+        const [lastMovement] = await connection.query(
+          `SELECT balance FROM current_account WHERE client_id = ? ORDER BY created_at DESC LIMIT 1`,
+          [membership.client_id],
+        )
+        const currentBalance = lastMovement.length > 0 ? Number.parseFloat(lastMovement[0].balance) : 0
+        const newBalance = currentBalance - planPrice
+        await connection.query(
+          `INSERT INTO current_account (client_id, membership_id, type, amount, description, balance, created_by)
+           VALUES (?, ?, 'credit', ?, ?, ?, ?)`,
+          [membership.client_id, id, planPrice, `Cancelación membresía - ${membership.plan_name}`, newBalance, created_by],
+        )
+        affectsCurrentAccount = true
+      }
+      if (membership.cash_movement_id) {
+        const [movements] = await connection.query(
+          "SELECT amount, payment_method, cash_session_id FROM cash_movements WHERE id = ?",
+          [membership.cash_movement_id],
+        )
+        if (movements.length > 0) {
+          const [sessions] = await connection.query(
+            "SELECT id, status FROM cash_sessions WHERE id = ?",
+            [movements[0].cash_session_id],
+          )
+          if (sessions.length > 0 && sessions[0].status === "open") {
+            await connection.query(
+              `INSERT INTO cash_movements (cash_session_id, type, payment_method, amount, description, created_by)
+               VALUES (?, 'expense', ?, ?, ?, ?)`,
+              [
+                movements[0].cash_session_id,
+                movements[0].payment_method || "cash",
+                Number(movements[0].amount),
+                `Cancelación membresía #${id} - ${membership.client_name} - ${membership.plan_name}`,
+                created_by,
+              ],
+            )
+            affectsCash = true
+          }
         }
       }
     }

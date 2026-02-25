@@ -331,11 +331,24 @@ export const validateCreateMembershipWithPayment = (req, res, next) => {
     })
   }
 
-  if (!payment_method || !["cash", "transfer", "credit_card", "current_account"].includes(payment_method)) {
-    return res.status(400).json({
-      success: false,
-      message: "El método de pago debe ser 'cash', 'transfer', 'credit_card' o 'current_account'",
-    })
+  const validMethods = ["cash", "transfer", "credit_card", "current_account"]
+  const payments = req.body.payments
+  if (payments && Array.isArray(payments) && payments.length > 0) {
+    for (const p of payments) {
+      if (!validMethods.includes(p.payment_method) || Number(p.amount) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Cada pago debe tener método válido y monto mayor a 0",
+        })
+      }
+    }
+  } else {
+    if (!payment_method || !validMethods.includes(payment_method)) {
+      return res.status(400).json({
+        success: false,
+        message: "El método de pago debe ser 'cash', 'transfer', 'credit_card' o 'current_account'",
+      })
+    }
   }
 
   if (!start_date || String(start_date).trim() === "") {
@@ -422,7 +435,7 @@ export const validateCategory = (req, res, next) => {
 }
 
 export const validateCreateSale = (req, res, next) => {
-  const { items, payment_method } = req.body
+  const { items, payment_method, payments } = req.body
   if (!items || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({
       success: false,
@@ -445,15 +458,31 @@ export const validateCreateSale = (req, res, next) => {
       })
     }
   }
-  if (!payment_method || !["cash", "transfer", "credit_card", "current_account"].includes(payment_method)) {
-    return res.status(400).json({
-      success: false,
-      message: "El método de pago debe ser cash, transfer, credit_card o current_account",
-    })
-  }
-  if (payment_method === "current_account") {
-    const client_id = req.body.client_id
-    if (!client_id) {
+  const validMethods = ["cash", "transfer", "credit_card", "current_account"]
+  if (payments && Array.isArray(payments) && payments.length > 0) {
+    for (const p of payments) {
+      if (!validMethods.includes(p.payment_method) || Number(p.amount) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Cada pago debe tener método válido (cash, transfer, credit_card, current_account) y monto mayor a 0",
+        })
+      }
+    }
+    const hasCurrentAccount = payments.some((p) => p.payment_method === "current_account")
+    if (hasCurrentAccount && !req.body.client_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Para venta a cuenta corriente es obligatorio indicar el cliente (client_id)",
+      })
+    }
+  } else {
+    if (!payment_method || !validMethods.includes(payment_method)) {
+      return res.status(400).json({
+        success: false,
+        message: "El método de pago debe ser cash, transfer, credit_card o current_account",
+      })
+    }
+    if (payment_method === "current_account" && !req.body.client_id) {
       return res.status(400).json({
         success: false,
         message: "Para venta a cuenta corriente es obligatorio indicar el cliente (client_id)",

@@ -16,7 +16,7 @@ CREATE TABLE users (
   username VARCHAR(50) UNIQUE NOT NULL,
   password VARCHAR(255) NOT NULL,
   name VARCHAR(100) NOT NULL,
-  email VARCHAR(100) UNIQUE,
+  email VARCHAR(100) NULL UNIQUE,
   role ENUM('admin', 'empleado') DEFAULT 'empleado',
   active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -187,7 +187,7 @@ CREATE TABLE memberships (
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
   status ENUM('active', 'expired', 'cancelled') DEFAULT 'active',
-  payment_method ENUM('cash', 'transfer', 'credit_card') NULL,
+  payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account', 'combined') NULL,
   payment_status ENUM('pending', 'paid') NOT NULL DEFAULT 'pending',
   paid_at TIMESTAMP NULL,
   cash_movement_id INT NULL,
@@ -206,6 +206,21 @@ CREATE TABLE memberships (
   INDEX idx_status (status),
   INDEX idx_payment_status (payment_status),
   INDEX idx_end_date (end_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ====================================================================
+-- TABLA DE PAGOS POR MEMBRESÍA (pagos combinados)
+-- ====================================================================
+CREATE TABLE membership_payments (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  membership_id INT NOT NULL,
+  payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account') NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  cash_movement_id INT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (membership_id) REFERENCES memberships(id) ON DELETE CASCADE,
+  FOREIGN KEY (cash_movement_id) REFERENCES cash_movements(id) ON DELETE SET NULL,
+  INDEX idx_membership_id (membership_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================
@@ -252,7 +267,7 @@ CREATE TABLE IF NOT EXISTS current_account (
 
 -- Actualizar enum de método de pago en membresías para incluir cuenta corriente
 ALTER TABLE memberships 
-MODIFY COLUMN payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account') NULL;
+MODIFY COLUMN payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account', 'combined') NULL;
 
 -- ====================================================================
 -- TABLA DE CATEGORÍAS (productos)
@@ -316,7 +331,7 @@ CREATE TABLE sales (
   client_id INT NULL,
   cash_session_id INT NULL,
   cash_movement_id INT NULL,
-  payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account') NOT NULL,
+  payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account', 'combined') NOT NULL,
   subtotal DECIMAL(12, 2) NOT NULL DEFAULT 0,
   discount DECIMAL(12, 2) NOT NULL DEFAULT 0,
   total DECIMAL(12, 2) NOT NULL DEFAULT 0,
@@ -331,6 +346,21 @@ CREATE TABLE sales (
   INDEX idx_user_id (user_id),
   INDEX idx_created_at (created_at),
   INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ====================================================================
+-- TABLA DE PAGOS POR VENTA (pagos combinados)
+-- ====================================================================
+CREATE TABLE sale_payments (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  sale_id INT NOT NULL,
+  payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account') NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  cash_movement_id INT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+  FOREIGN KEY (cash_movement_id) REFERENCES cash_movements(id) ON DELETE SET NULL,
+  INDEX idx_sale_id (sale_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ====================================================================
