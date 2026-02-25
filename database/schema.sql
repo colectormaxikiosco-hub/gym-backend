@@ -316,7 +316,7 @@ CREATE TABLE stock_movements (
   notes VARCHAR(255) NULL,
   created_by INT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE RESTRICT,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT,
   INDEX idx_product_id (product_id),
   INDEX idx_created_at (created_at)

@@ -276,6 +276,8 @@ export const deleteProduct = async (req, res) => {
       })
     }
 
+    // Borrar primero los movimientos de stock para evitar error de FK (RESTRICT)
+    await pool.query("DELETE FROM stock_movements WHERE product_id = ?", [id])
     await pool.query("DELETE FROM products WHERE id = ?", [id])
     res.json({
       success: true,
