@@ -20,15 +20,6 @@ function buildWelcomeMessageWhatsApp(username, password) {
   ].join("\n")
 }
 
-function generateTemporaryPassword(length = 8) {
-  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
-  let result = ""
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
-  }
-  return result
-}
-
 // Obtener todos los clientes (con paginación, búsqueda, filtro por cuenta corriente y por estado activo/inactivo)
 export const getAllClients = async (req, res, next) => {
   try {
@@ -349,13 +340,13 @@ export const deleteClient = async (req, res, next) => {
   }
 }
 
-// Reenviar mensaje de bienvenida por WhatsApp: genera contraseña temporal, actualiza el cliente y devuelve mensaje y teléfono para abrir wa.me
+// Reenviar mensaje de bienvenida por WhatsApp: usa el DNI del cliente como contraseña, actualiza la contraseña en BD y devuelve mensaje y teléfono para abrir wa.me
 export const resendWelcomeWhatsApp = async (req, res, next) => {
   try {
     const { id } = req.params
 
     const [clients] = await pool.query(
-      "SELECT id, username, name, phone FROM clients WHERE id = ? AND active = 1",
+      "SELECT id, username, name, phone, dni FROM clients WHERE id = ? AND active = 1",
       [id],
     )
 
@@ -368,6 +359,14 @@ export const resendWelcomeWhatsApp = async (req, res, next) => {
 
     const client = clients[0]
     const phone = client.phone?.toString?.()?.trim?.()
+    const dni = client.dni != null ? String(client.dni).trim() : ""
+
+    if (!dni) {
+      return res.status(400).json({
+        success: false,
+        message: "El cliente no tiene DNI registrado. La contraseña de ingreso es el DNI.",
+      })
+    }
 
     if (!phone) {
       return res.status(400).json({
@@ -384,15 +383,14 @@ export const resendWelcomeWhatsApp = async (req, res, next) => {
       })
     }
 
-    const tempPassword = generateTemporaryPassword(8)
-    const hashedPassword = await bcrypt.hash(tempPassword, 10)
+    const hashedPassword = await bcrypt.hash(dni, 10)
     await pool.query("UPDATE clients SET password = ? WHERE id = ?", [hashedPassword, id])
 
-    const message = buildWelcomeMessageWhatsApp(client.username, tempPassword)
+    const message = buildWelcomeMessageWhatsApp(client.username, dni)
 
     res.json({
       success: true,
-      message: "Se generó una nueva contraseña temporal. Abrí WhatsApp para enviar las credenciales al cliente.",
+      message: "La contraseña es el DNI del cliente. Abrí WhatsApp para enviar las credenciales.",
       data: {
         message,
         phone: normalizedPhone,
