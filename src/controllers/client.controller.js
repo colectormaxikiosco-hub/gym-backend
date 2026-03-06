@@ -1,5 +1,33 @@
 import bcrypt from "bcryptjs"
 import pool from "../config/database.js"
+import { normalizePhoneArgentina } from "../utils/phoneAr.js"
+
+const WELCOME_SITE_URL = "www.lifefitnesstrancas.com"
+
+function buildWelcomeMessageWhatsApp(username, password) {
+  return [
+    "¡Bienvenido/a a Life Fitness!",
+    "",
+    "Tus credenciales de ingreso son:",
+    `Usuario: ${username}`,
+    `Contraseña: ${password}`,
+    "",
+    `Ingresá a ${WELCOME_SITE_URL} para ver tu estado de membresía, avisos y más.`,
+    "",
+    "Podés cambiar tu contraseña en la sección Perfil una vez que ingreses.",
+    "",
+    "— Life Fitness",
+  ].join("\n")
+}
+
+function generateTemporaryPassword(length = 8) {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+  let result = ""
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return result
+}
 
 // Obtener todos los clientes (con paginación, búsqueda, filtro por cuenta corriente y por estado activo/inactivo)
 export const getAllClients = async (req, res, next) => {
@@ -317,6 +345,61 @@ export const deleteClient = async (req, res, next) => {
     })
   } catch (error) {
     console.error("Error al eliminar cliente")
+    next(error)
+  }
+}
+
+// Reenviar mensaje de bienvenida por WhatsApp: genera contraseña temporal, actualiza el cliente y devuelve mensaje y teléfono para abrir wa.me
+export const resendWelcomeWhatsApp = async (req, res, next) => {
+  try {
+    const { id } = req.params
+
+    const [clients] = await pool.query(
+      "SELECT id, username, name, phone FROM clients WHERE id = ? AND active = 1",
+      [id],
+    )
+
+    if (clients.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Cliente no encontrado",
+      })
+    }
+
+    const client = clients[0]
+    const phone = client.phone?.toString?.()?.trim?.()
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: "El cliente no tiene teléfono registrado. Agregá un teléfono para poder reenviar las credenciales por WhatsApp.",
+      })
+    }
+
+    const normalizedPhone = normalizePhoneArgentina(phone)
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "El número de teléfono no es válido para WhatsApp (formato Argentina).",
+      })
+    }
+
+    const tempPassword = generateTemporaryPassword(8)
+    const hashedPassword = await bcrypt.hash(tempPassword, 10)
+    await pool.query("UPDATE clients SET password = ? WHERE id = ?", [hashedPassword, id])
+
+    const message = buildWelcomeMessageWhatsApp(client.username, tempPassword)
+
+    res.json({
+      success: true,
+      message: "Se generó una nueva contraseña temporal. Abrí WhatsApp para enviar las credenciales al cliente.",
+      data: {
+        message,
+        phone: normalizedPhone,
+      },
+    })
+  } catch (error) {
+    console.error("Error al reenviar mensaje de bienvenida WhatsApp", error)
     next(error)
   }
 }

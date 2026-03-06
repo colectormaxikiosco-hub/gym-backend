@@ -5,6 +5,7 @@ import {
   createClient,
   updateClient,
   deleteClient,
+  resendWelcomeWhatsApp,
   getMyProfile,
   updateMyProfile,
   changeMyPassword,
@@ -24,5 +25,6 @@ router.get("/:id", authenticate, requireRole(["admin", "empleado"]), getClientBy
 router.post("/", authenticate, requireRole(["admin", "empleado"]), validateCreateClient, createClient)
 router.put("/:id", authenticate, requireRole(["admin", "empleado"]), validateUpdateClient, updateClient)
 router.delete("/:id", authenticate, requireRole(["admin"]), deleteClient)
+router.post("/:id/resend-welcome-whatsapp", authenticate, requireRole(["admin", "empleado"]), resendWelcomeWhatsApp)
 
 export default router
