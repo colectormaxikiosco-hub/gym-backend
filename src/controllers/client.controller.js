@@ -24,7 +24,7 @@ function buildWelcomeMessageWhatsApp(username, password) {
 export const getAllClients = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1)
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10))
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 10))
     const offset = (page - 1) * limit
     const search = (req.query.search || "").trim()
     const debtFilter = (req.query.debt_filter || "all").toLowerCase()
@@ -60,11 +60,12 @@ export const getAllClients = async (req, res, next) => {
       debtHaving = " HAVING (balance IS NULL OR balance <= 0)"
     }
 
+    const activeMembershipSubquery = `(SELECT client_id FROM memberships WHERE status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() AND (ends_at IS NULL OR ends_at >= NOW()))`
     let daysRemainingCondition = ""
     if (filterByDaysRemaining) {
-      daysRemainingCondition = ` AND c.id IN (SELECT m.client_id FROM memberships m WHERE m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND DATEDIFF(m.end_date, CURDATE()) = ?)`
+      daysRemainingCondition = ` AND c.id IN (SELECT m.client_id FROM memberships m WHERE m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND (m.ends_at IS NULL OR m.ends_at >= NOW()) AND DATEDIFF(m.end_date, CURDATE()) = ?)`
     } else if (filterExpired) {
-      daysRemainingCondition = ` AND c.id IN (SELECT client_id FROM memberships WHERE status = 'expired') AND c.id NOT IN (SELECT client_id FROM memberships WHERE status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE())`
+      daysRemainingCondition = ` AND c.id IN (SELECT client_id FROM memberships WHERE status = 'expired') AND c.id NOT IN ${activeMembershipSubquery}`
     }
     const baseSelect = `SELECT c.id, c.username, c.name, c.phone, c.dni, 
        c.active, c.created_at, c.last_login, u.name as created_by_name,
@@ -90,13 +91,14 @@ export const getAllClients = async (req, res, next) => {
       const clientIds = clients.map((c) => c.id)
       const placeholders = clientIds.map(() => "?").join(",")
       const [activeRows] = await pool.query(
-        `SELECT m.client_id, m.id as membership_id, m.end_date, m.reminder_sent_days,
-         p.name as plan_name, p.duration_days,
-         DATEDIFF(m.end_date, CURDATE()) as days_remaining
+        `SELECT m.client_id, m.id as membership_id, m.end_date, m.ends_at, m.reminder_sent_days,
+         p.name as plan_name, p.duration_days, p.duration_hours,
+         DATEDIFF(m.end_date, CURDATE()) as days_remaining,
+         CASE WHEN m.ends_at IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), m.ends_at) ELSE NULL END as minutes_remaining
          FROM memberships m
          INNER JOIN plans p ON p.id = m.plan_id
-         WHERE m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND m.client_id IN (${placeholders})
-         ORDER BY m.end_date DESC`,
+         WHERE m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND (m.ends_at IS NULL OR m.ends_at >= NOW()) AND m.client_id IN (${placeholders})
+         ORDER BY m.end_date DESC, m.ends_at DESC`,
         clientIds,
       )
       const membershipByClient = {}
@@ -106,8 +108,11 @@ export const getAllClients = async (req, res, next) => {
             membership_id: row.membership_id,
             plan_name: row.plan_name,
             end_date: row.end_date,
+            ends_at: row.ends_at,
             days_remaining: row.days_remaining,
+            minutes_remaining: row.minutes_remaining,
             duration_days: row.duration_days,
+            duration_hours: row.duration_hours,
             reminder_sent_days: row.reminder_sent_days || "",
           }
         }
@@ -424,12 +429,14 @@ export const getMyProfile = async (req, res, next) => {
     const client = clients[0]
 
     const [activeMembershipRows] = await pool.query(
-      `SELECT m.id as membership_id, m.end_date, p.name as plan_name,
-       p.duration_days, DATEDIFF(m.end_date, CURDATE()) as days_remaining
+      `SELECT m.id as membership_id, m.end_date, m.ends_at, p.name as plan_name,
+       p.duration_days, p.duration_hours,
+       DATEDIFF(m.end_date, CURDATE()) as days_remaining,
+       CASE WHEN m.ends_at IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), m.ends_at) ELSE NULL END as minutes_remaining
        FROM memberships m
        INNER JOIN plans p ON p.id = m.plan_id
-       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE()
-       ORDER BY m.end_date DESC LIMIT 1`,
+       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND (m.ends_at IS NULL OR m.ends_at >= NOW())
+       ORDER BY m.end_date DESC, m.ends_at DESC LIMIT 1`,
       [clientId],
     )
 
@@ -438,8 +445,11 @@ export const getMyProfile = async (req, res, next) => {
         ? {
             plan_name: activeMembershipRows[0].plan_name,
             end_date: activeMembershipRows[0].end_date,
+            ends_at: activeMembershipRows[0].ends_at,
             days_remaining: activeMembershipRows[0].days_remaining,
+            minutes_remaining: activeMembershipRows[0].minutes_remaining,
             duration_days: activeMembershipRows[0].duration_days,
+            duration_hours: activeMembershipRows[0].duration_hours,
           }
         : null
 

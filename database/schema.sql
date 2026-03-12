@@ -108,7 +108,8 @@ CREATE TABLE instructors (
 CREATE TABLE plans (
   id INT PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(100) NOT NULL UNIQUE,
-  duration_days INT NOT NULL COMMENT 'Duración en días',
+  duration_days INT NOT NULL COMMENT 'Duración en días (0 si es plan por horas)',
+  duration_hours INT NULL DEFAULT NULL COMMENT 'Duración en horas; si > 0, el plan es por horas',
   price DECIMAL(10, 2) NOT NULL,
   description TEXT,
   active BOOLEAN DEFAULT TRUE,
@@ -186,6 +187,7 @@ CREATE TABLE memberships (
   instructor_id INT NULL,
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
+  ends_at TIMESTAMP NULL DEFAULT NULL COMMENT 'Para planes por horas: vencimiento exacto (desde compra + duration_hours)',
   status ENUM('active', 'expired', 'cancelled') DEFAULT 'active',
   payment_method ENUM('cash', 'transfer', 'credit_card', 'current_account', 'combined') NULL,
   payment_status ENUM('pending', 'paid') NOT NULL DEFAULT 'pending',
@@ -418,6 +420,6 @@ INSERT INTO classes (name, description, instructor, day_of_week, start_time, end
 -- ====================================================================
 -- DATOS DE EJEMPLO - PLANES
 -- ====================================================================
-INSERT INTO plans (name, duration_days, price, description) VALUES
-('Plan Mensual', 30, 20000.00, 'Acceso completo al gimnasio durante 30 días'),
-('Plan Diario', 1, 2000.00, 'Acceso al gimnasio por un día');
+INSERT INTO plans (name, duration_days, duration_hours, price, description) VALUES
+('Plan Mensual', 30, NULL, 20000.00, 'Acceso completo al gimnasio durante 30 días'),
+('Plan Diario', 1, NULL, 2000.00, 'Acceso al gimnasio por un día');

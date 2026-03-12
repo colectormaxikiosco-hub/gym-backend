@@ -69,10 +69,12 @@ export const getPlanById = async (req, res) => {
 
 export const createPlan = async (req, res) => {
   try {
-    const { name, duration_days, price, description, instructor_ids } = req.body
+    const { name, duration_days, duration_hours, price, description, instructor_ids } = req.body
+    const days = duration_days != null ? Number(duration_days) : 0
+    const hours = duration_hours != null ? Number(duration_hours) : 0
     const [result] = await pool.query(
-      "INSERT INTO plans (name, duration_days, price, description) VALUES (?, ?, ?, ?)",
-      [name, duration_days, price, description || null]
+      "INSERT INTO plans (name, duration_days, duration_hours, price, description) VALUES (?, ?, ?, ?, ?)",
+      [name, days, hours || null, price, description || null]
     )
     const planId = result.insertId
     const ids = Array.isArray(instructor_ids) ? instructor_ids.map((id) => Number(id)).filter((id) => id > 0) : []
@@ -108,10 +110,12 @@ export const createPlan = async (req, res) => {
 export const updatePlan = async (req, res) => {
   try {
     const { id } = req.params
-    const { name, duration_days, price, description, active, instructor_ids } = req.body
+    const { name, duration_days, duration_hours, price, description, active, instructor_ids } = req.body
+    const days = duration_days != null ? Number(duration_days) : 0
+    const hours = duration_hours != null ? Number(duration_hours) : 0
     const [result] = await pool.query(
-      "UPDATE plans SET name = ?, duration_days = ?, price = ?, description = ?, active = ? WHERE id = ?",
-      [name, duration_days, price, description, active !== undefined ? active : true, id]
+      "UPDATE plans SET name = ?, duration_days = ?, duration_hours = ?, price = ?, description = ?, active = ? WHERE id = ?",
+      [name, days, hours || null, price, description, active !== undefined ? active : true, id]
     )
     if (result.affectedRows === 0) {
       return res.status(404).json({
@@ -149,7 +153,7 @@ export const deletePlan = async (req, res) => {
   try {
     const { id } = req.params
     const [memberships] = await pool.query(
-      "SELECT COUNT(*) as count FROM memberships WHERE plan_id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE()",
+      `SELECT COUNT(*) as count FROM memberships WHERE plan_id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() AND (ends_at IS NULL OR ends_at >= NOW())`,
       [id]
     )
     if (memberships[0].count > 0) {

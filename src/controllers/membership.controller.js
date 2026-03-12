@@ -1,10 +1,10 @@
 import pool from "../config/database.js"
 
-// Sincroniza estado en BD: las que están 'active' y ya vencieron (end_date < hoy) pasan a 'expired'
-// Retorna el resultado del UPDATE para poder usar affectedRows si hace falta
+// Sincroniza estado en BD: las que están 'active' y ya vencieron (end_date < hoy o ends_at < ahora) pasan a 'expired'
 const syncExpiredMemberships = async () => {
   const [result] = await pool.query(
-    "UPDATE memberships SET status = 'expired' WHERE status = 'active' AND end_date < CURDATE()",
+    `UPDATE memberships SET status = 'expired' 
+     WHERE status = 'active' AND (end_date < CURDATE() OR (ends_at IS NOT NULL AND ends_at < NOW()))`,
   )
   return result
 }
@@ -67,7 +67,9 @@ export const getAllMemberships = async (req, res) => {
         p.name as plan_name,
         p.price as plan_price,
         p.duration_days as plan_duration,
+        p.duration_hours as plan_duration_hours,
         DATEDIFF(m.end_date, CURDATE()) as days_remaining,
+        CASE WHEN m.ends_at IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), m.ends_at) ELSE NULL END as minutes_remaining,
         u.name as created_by_name,
         i.name as instructor_name
       ${baseWhere}
@@ -96,9 +98,9 @@ export const getMembershipById = async (req, res) => {
   try {
     const { id } = req.params
 
-    // Sincronizar esta membresía si está activa y ya venció
+    // Sincronizar esta membresía si está activa y ya venció (por fecha o por ends_at)
     await pool.query(
-      "UPDATE memberships SET status = 'expired' WHERE id = ? AND status = 'active' AND end_date < CURDATE()",
+      `UPDATE memberships SET status = 'expired' WHERE id = ? AND status = 'active' AND (end_date < CURDATE() OR (ends_at IS NOT NULL AND ends_at < NOW()))`,
       [id],
     )
 
@@ -112,6 +114,7 @@ export const getMembershipById = async (req, res) => {
         p.name as plan_name,
         p.price as plan_price,
         p.duration_days as plan_duration,
+        p.duration_hours as plan_duration_hours,
         i.name as instructor_name
       FROM memberships m
       INNER JOIN clients c ON m.client_id = c.id
@@ -153,11 +156,14 @@ export const getClientActiveMembership = async (req, res) => {
         p.name as plan_name,
         p.price as plan_price,
         p.duration_days as plan_duration,
-        DATEDIFF(m.end_date, CURDATE()) as days_remaining
+        p.duration_hours as plan_duration_hours,
+        DATEDIFF(m.end_date, CURDATE()) as days_remaining,
+        CASE WHEN m.ends_at IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), m.ends_at) ELSE NULL END as minutes_remaining
       FROM memberships m
       INNER JOIN plans p ON m.plan_id = p.id
       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE()
-      ORDER BY m.end_date DESC
+        AND (m.ends_at IS NULL OR m.ends_at >= NOW())
+      ORDER BY m.end_date DESC, m.ends_at DESC
       LIMIT 1
     `,
       [clientId],
@@ -203,9 +209,9 @@ export const createMembership = async (req, res) => {
       })
     }
 
-    // Obtener plan (duración para validar clase vs larga, y precio/nombre para crear membresía)
+    // Obtener plan (duración días/horas, precio, nombre)
     const [plansForValidation] = await connection.query(
-      "SELECT duration_days, price, name FROM plans WHERE id = ? AND active = TRUE",
+      "SELECT duration_days, duration_hours, price, name FROM plans WHERE id = ? AND active = TRUE",
       [plan_id],
     )
     if (plansForValidation.length === 0) {
@@ -216,14 +222,16 @@ export const createMembership = async (req, res) => {
       })
     }
     const newPlanDurationDays = Number(plansForValidation[0].duration_days) || 0
-    const isNewPlanClass = newPlanDurationDays <= 3
+    const newPlanDurationHours = Number(plansForValidation[0].duration_hours) || 0
+    const isNewPlanClass = newPlanDurationDays <= 3 || newPlanDurationHours > 0
 
-    // Membresías activas en vigor (con duración del plan para saber si son "largas" o "clases")
+    // Membresías activas en vigor (excluye las que vencieron por ends_at)
     const [existingCurrent] = await connection.query(
       `SELECT m.id, m.end_date, p.duration_days
        FROM memberships m
        INNER JOIN plans p ON p.id = m.plan_id
        WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE()
+         AND (m.ends_at IS NULL OR m.ends_at >= NOW())
        ORDER BY m.end_date DESC`,
       [client_id],
     )
@@ -342,13 +350,22 @@ export const createMembership = async (req, res) => {
       }
     }
 
-    // Calcular fecha de fin
+    // Calcular fecha de fin y, si aplica, ends_at (planes por horas)
     const startDate = new Date(start_date)
     const endDate = new Date(startDate)
     const durationDays = Number(plan.duration_days) || 0
-    // Plan de 1 día = válido solo el día de inicio (una entrada/clase). Al día siguiente ya venció.
-    if (durationDays !== 1) {
-      endDate.setDate(endDate.getDate() + durationDays)
+    const durationHours = Number(plan.duration_hours) || 0
+    let endsAt = null
+    if (durationHours > 0) {
+      // Plan por horas: válido desde ahora por X horas. end_date = mismo día.
+      endDate.setDate(endDate.getDate()) // mismo día
+      endsAt = new Date()
+      endsAt.setTime(endsAt.getTime() + durationHours * 60 * 60 * 1000)
+    } else {
+      // Plan por días: 1 día = solo ese día; más días = start + N días
+      if (durationDays !== 1) {
+        endDate.setDate(endDate.getDate() + durationDays)
+      }
     }
 
     const membershipPaymentMethod = payments.length === 1 ? payments[0].payment_method : "combined"
@@ -357,14 +374,15 @@ export const createMembership = async (req, res) => {
 
     const [membershipResult] = await connection.query(
       `INSERT INTO memberships 
-       (client_id, plan_id, instructor_id, start_date, end_date, payment_method, payment_status, paid_at, status, notes, discount, created_by) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+       (client_id, plan_id, instructor_id, start_date, end_date, ends_at, payment_method, payment_status, paid_at, status, notes, discount, created_by) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       [
         client_id,
         plan_id,
         finalInstructorId,
         start_date,
         endDate.toISOString().split("T")[0],
+        endsAt ? endsAt.toISOString().slice(0, 19).replace("T", " ") : null,
         membershipPaymentMethod,
         payment_status,
         paidAt,
@@ -725,7 +743,7 @@ export const recordMembershipReminder = async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      "SELECT id, reminder_sent_days FROM memberships WHERE id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE()",
+      `SELECT id, reminder_sent_days FROM memberships WHERE id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() AND (ends_at IS NULL OR ends_at >= NOW())`,
       [id],
     )
     if (rows.length === 0) {

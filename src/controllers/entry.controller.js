@@ -22,8 +22,8 @@ export const registerEntry = async (req, res) => {
     const [activeMemberships] = await pool.query(
       `SELECT m.id as membership_id
        FROM memberships m
-       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE()
-       ORDER BY m.end_date DESC
+       WHERE m.client_id = ? AND m.status = 'active' AND m.start_date <= CURDATE() AND m.end_date >= CURDATE() AND (m.ends_at IS NULL OR m.ends_at >= NOW())
+       ORDER BY m.end_date DESC, m.ends_at DESC
        LIMIT 1`,
       [clientId],
     )

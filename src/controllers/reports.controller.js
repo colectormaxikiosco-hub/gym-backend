@@ -101,7 +101,7 @@ export const getMembershipReports = async (req, res) => {
 
     // Membresías activas totales (sin filtro de fechas)
     const [countActive] = await pool.query(
-      "SELECT COUNT(*) as total FROM memberships WHERE status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE()",
+      `SELECT COUNT(*) as total FROM memberships WHERE status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() AND (ends_at IS NULL OR ends_at >= NOW())`,
     )
     const activeMembershipsTotal = Number(countActive[0]?.total) || 0
 

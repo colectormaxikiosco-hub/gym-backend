@@ -160,7 +160,7 @@ export const validateUpdateClient = (req, res, next) => {
 }
 
 export const validateCreatePlan = (req, res, next) => {
-  const { name, duration_days, price } = req.body
+  const { name, duration_days, duration_hours, price } = req.body
 
   if (!name || name.trim().length === 0) {
     return res.status(400).json({
@@ -169,10 +169,14 @@ export const validateCreatePlan = (req, res, next) => {
     })
   }
 
-  if (!duration_days || duration_days <= 0) {
+  const days = Number(duration_days)
+  const hours = Number(duration_hours)
+  const hasDays = !Number.isNaN(days) && days > 0
+  const hasHours = !Number.isNaN(hours) && hours > 0
+  if (!hasDays && !hasHours) {
     return res.status(400).json({
       success: false,
-      message: "La duración debe ser mayor a 0 días",
+      message: "Debe indicar duración en días (mayor a 0) o en horas (mayor a 0).",
     })
   }
 
