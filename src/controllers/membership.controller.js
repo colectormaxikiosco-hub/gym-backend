@@ -345,7 +345,11 @@ export const createMembership = async (req, res) => {
     // Calcular fecha de fin
     const startDate = new Date(start_date)
     const endDate = new Date(startDate)
-    endDate.setDate(endDate.getDate() + plan.duration_days)
+    const durationDays = Number(plan.duration_days) || 0
+    // Plan de 1 día = válido solo el día de inicio (una entrada/clase). Al día siguiente ya venció.
+    if (durationDays !== 1) {
+      endDate.setDate(endDate.getDate() + durationDays)
+    }
 
     const membershipPaymentMethod = payments.length === 1 ? payments[0].payment_method : "combined"
     const payment_status = hasCurrentAccount ? "pending" : "paid"
