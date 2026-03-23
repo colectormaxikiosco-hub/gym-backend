@@ -2,7 +2,7 @@ import pool from "../config/database.js"
 
 export const getAllProducts = async (req, res) => {
   try {
-    const { search, category } = req.query
+    const { search, category, stock_order, price_min, price_max } = req.query
     let sql = "SELECT * FROM products WHERE active = TRUE"
     const params = []
 
@@ -15,8 +15,28 @@ export const getAllProducts = async (req, res) => {
       sql += " AND category = ?"
       params.push(category.trim())
     }
+    const hasPriceMin = price_min !== undefined && price_min !== null && String(price_min).trim() !== ""
+    const hasPriceMax = price_max !== undefined && price_max !== null && String(price_max).trim() !== ""
+    const parsedPriceMin = hasPriceMin ? Number(price_min) : null
+    const parsedPriceMax = hasPriceMax ? Number(price_max) : null
 
-    sql += " ORDER BY name ASC"
+    if (hasPriceMin && !Number.isNaN(parsedPriceMin)) {
+      sql += " AND sale_price >= ?"
+      params.push(parsedPriceMin)
+    }
+    if (hasPriceMax && !Number.isNaN(parsedPriceMax)) {
+      sql += " AND sale_price <= ?"
+      params.push(parsedPriceMax)
+    }
+
+    const stockOrder = String(stock_order || "").toLowerCase()
+    if (stockOrder === "asc") {
+      sql += " ORDER BY stock ASC, name ASC"
+    } else if (stockOrder === "desc") {
+      sql += " ORDER BY stock DESC, name ASC"
+    } else {
+      sql += " ORDER BY name ASC"
+    }
     const [rows] = await pool.query(sql, params)
     res.json({
       success: true,
@@ -318,35 +338,54 @@ export const getMovementsByProductId = async (req, res) => {
 
 export const getAllMovements = async (req, res) => {
   try {
-    const { search, type, product_id } = req.query
-    let sql = `
-      SELECT sm.*, p.name as product_name, p.code as product_code, p.unit as product_unit, u.name as created_by_name
+    const { search, type, product_id, period, page: pageParam, limit: limitParam } = req.query
+    const page = Math.max(1, parseInt(pageParam, 10) || 1)
+    const limit = Math.min(100, Math.max(1, parseInt(limitParam, 10) || 10))
+    const offset = (page - 1) * limit
+    const baseFrom = `
       FROM stock_movements sm
       INNER JOIN products p ON p.id = sm.product_id
       LEFT JOIN users u ON u.id = sm.created_by
       WHERE p.active = TRUE
     `
+    let whereSql = ""
     const params = []
 
     if (search && search.trim()) {
-      sql += " AND (p.name LIKE ? OR p.code LIKE ?)"
+      whereSql += " AND (p.name LIKE ? OR p.code LIKE ?)"
       const term = `%${search.trim()}%`
       params.push(term, term)
     }
     if (type && ["entrada", "salida", "ajuste"].includes(type)) {
-      sql += " AND sm.type = ?"
+      whereSql += " AND sm.type = ?"
       params.push(type)
     }
     if (product_id && product_id.trim()) {
-      sql += " AND sm.product_id = ?"
+      whereSql += " AND sm.product_id = ?"
       params.push(product_id.trim())
     }
+    const periodDays = Number(period)
+    if ((period === "7" || period === "30") && !Number.isNaN(periodDays)) {
+      whereSql += " AND sm.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"
+      params.push(periodDays)
+    }
 
-    sql += " ORDER BY sm.created_at DESC"
-    const [rows] = await pool.query(sql, params)
+    const [countRows] = await pool.query(`SELECT COUNT(*) as total ${baseFrom} ${whereSql}`, params)
+    const total = countRows[0]?.total ?? 0
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    const sql = `
+      SELECT sm.*, p.name as product_name, p.code as product_code, p.unit as product_unit, u.name as created_by_name
+      ${baseFrom}
+      ${whereSql}
+      ORDER BY sm.created_at DESC
+      LIMIT ? OFFSET ?
+    `
+    const [rows] = await pool.query(sql, [...params, limit, offset])
     res.json({
       success: true,
       data: rows,
+      pagination: { page, limit, total, totalPages },
     })
   } catch (error) {
     console.error("Error al obtener movimientos:", error)
