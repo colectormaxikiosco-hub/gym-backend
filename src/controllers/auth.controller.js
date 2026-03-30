@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 import pool from "../config/database.js"
+import { setNoStoreHeaders } from "../utils/apiCacheHeaders.js"
 
 const generateToken = (id, role, type) => {
   return jwt.sign({ id, role, type }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE })
@@ -63,6 +64,7 @@ export const login = async (req, res, next) => {
 
     const token = generateToken(user.id, user.role || "client", userType)
 
+    setNoStoreHeaders(res)
     res.json({
       success: true,
       message: "Login exitoso",
@@ -88,6 +90,7 @@ export const verifyToken = async (req, res, next) => {
     const token = req.headers.authorization?.split(" ")[1]
 
     if (!token) {
+      setNoStoreHeaders(res)
       return res.status(401).json({
         success: false,
         message: "Token no proporcionado",
@@ -112,6 +115,7 @@ export const verifyToken = async (req, res, next) => {
     const [users] = await pool.query(query, [decoded.id])
 
     if (users.length === 0) {
+      setNoStoreHeaders(res)
       return res.status(401).json({
         success: false,
         message: "Usuario no válido",
@@ -120,6 +124,7 @@ export const verifyToken = async (req, res, next) => {
 
     const userData = users[0]
 
+    setNoStoreHeaders(res)
     res.json({
       success: true,
       data: {
@@ -132,12 +137,14 @@ export const verifyToken = async (req, res, next) => {
     })
   } catch (error) {
     if (error.name === "JsonWebTokenError") {
+      setNoStoreHeaders(res)
       return res.status(401).json({
         success: false,
         message: "Token inválido",
       })
     }
     if (error.name === "TokenExpiredError") {
+      setNoStoreHeaders(res)
       return res.status(401).json({
         success: false,
         message: "Token expirado",
