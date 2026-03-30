@@ -96,9 +96,16 @@ export const verifyToken = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
-    const table = decoded.type === "user" ? "users" : "clients"
+    // Tokens antiguos sin `type`: elegir tabla por rol para no mezclar users/clients con el mismo id
+    let userType = decoded.type
+    if (!userType) {
+      userType =
+        decoded.role === "admin" || decoded.role === "empleado" ? "user" : "client"
+    }
+
+    const table = userType === "user" ? "users" : "clients"
     const query =
-      decoded.type === "user"
+      userType === "user"
         ? "SELECT id, username, name, role FROM users WHERE id = ? AND active = 1"
         : "SELECT id, username, name FROM clients WHERE id = ? AND active = 1"
 
@@ -119,7 +126,7 @@ export const verifyToken = async (req, res, next) => {
         user: {
           ...userData,
           role: userData.role || "client",
-          type: decoded.type,
+          type: userType,
         },
       },
     })
