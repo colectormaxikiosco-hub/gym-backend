@@ -27,7 +27,13 @@ async function attachInstructorsToPlans(plans) {
 
 export const getAllPlans = async (req, res) => {
   try {
-    const [plans] = await pool.query("SELECT * FROM plans WHERE active = TRUE ORDER BY duration_days ASC")
+    const includeInactive = ["1", "true", "yes"].includes(
+      String(req.query.include_inactive || "").toLowerCase(),
+    )
+    const where = includeInactive ? "" : "WHERE active = TRUE"
+    const [plans] = await pool.query(
+      `SELECT * FROM plans ${where} ORDER BY active DESC, duration_days ASC, name ASC`,
+    )
     const withInstructors = await attachInstructorsToPlans(plans)
     res.json({
       success: true,
@@ -152,32 +158,78 @@ export const updatePlan = async (req, res) => {
 export const deletePlan = async (req, res) => {
   try {
     const { id } = req.params
-    const [memberships] = await pool.query(
-      `SELECT COUNT(*) as count FROM memberships WHERE plan_id = ? AND status = 'active' AND start_date <= CURDATE() AND end_date >= CURDATE() AND (ends_at IS NULL OR ends_at >= NOW())`,
-      [id]
-    )
-    if (memberships[0].count > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No se puede eliminar el plan porque tiene membresías activas",
-      })
-    }
-    const [result] = await pool.query("UPDATE plans SET active = FALSE WHERE id = ?", [id])
-    if (result.affectedRows === 0) {
+
+    const [planRows] = await pool.query("SELECT id, active FROM plans WHERE id = ?", [id])
+    if (planRows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Plan no encontrado",
       })
     }
-    res.json({
+
+    const [countRows] = await pool.query(
+      "SELECT COUNT(*) as count FROM memberships WHERE plan_id = ?",
+      [id],
+    )
+    const membershipCount = Number(countRows[0]?.count ?? 0)
+
+    if (membershipCount > 0) {
+      const wasActive = Boolean(planRows[0].active)
+      await pool.query("UPDATE plans SET active = FALSE WHERE id = ?", [id])
+      return res.json({
+        success: true,
+        action: "deactivated",
+        message: wasActive
+          ? "El plan tiene membresías en el historial. Se desactivó: no se podrá elegir en nuevas membresías; las actuales y pasadas no se alteran."
+          : "El plan ya estaba desactivado. Sigue sin mostrarse para nuevas membresías.",
+      })
+    }
+
+    const [del] = await pool.query("DELETE FROM plans WHERE id = ?", [id])
+    if (del.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Plan no encontrado",
+      })
+    }
+    return res.json({
       success: true,
-      message: "Plan desactivado correctamente",
+      action: "deleted",
+      message: "Plan eliminado correctamente",
     })
   } catch (error) {
-    console.error("Error al desactivar plan:", error)
+    console.error("Error al eliminar o desactivar plan:", error)
     res.status(500).json({
       success: false,
-      message: "Error al desactivar plan",
+      message: "Error al procesar la solicitud del plan",
+    })
+  }
+}
+
+export const togglePlanStatus = async (req, res) => {
+  try {
+    const { id } = req.params
+    const [rows] = await pool.query("SELECT * FROM plans WHERE id = ?", [id])
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Plan no encontrado",
+      })
+    }
+    const nextActive = !rows[0].active
+    await pool.query("UPDATE plans SET active = ? WHERE id = ?", [nextActive, id])
+    const [updated] = await pool.query("SELECT * FROM plans WHERE id = ?", [id])
+    const [withInstructors] = await attachInstructorsToPlans(updated)
+    res.json({
+      success: true,
+      message: nextActive ? "Plan activado correctamente" : "Plan desactivado correctamente",
+      data: withInstructors[0],
+    })
+  } catch (error) {
+    console.error("Error al cambiar estado del plan:", error)
+    res.status(500).json({
+      success: false,
+      message: "Error al cambiar estado del plan",
     })
   }
 }
