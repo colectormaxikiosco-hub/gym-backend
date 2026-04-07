@@ -1,5 +1,17 @@
 import pool from "../config/database.js"
 
+/** Normaliza `active` desde MySQL (0/1, boolean, Buffer en BIT) */
+function rowIsActive(row) {
+  const v = row?.active
+  if (v == null) return true
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(v)) {
+    return v.length > 0 && v[0] === 1
+  }
+  const n = Number(v)
+  if (!Number.isNaN(n)) return n === 1
+  return Boolean(v)
+}
+
 async function attachInstructorsToPlans(plans) {
   if (!plans || plans.length === 0) return plans
   const planIds = plans.map((p) => p.id)
@@ -174,7 +186,7 @@ export const deletePlan = async (req, res) => {
     const membershipCount = Number(countRows[0]?.count ?? 0)
 
     if (membershipCount > 0) {
-      const wasActive = Boolean(planRows[0].active)
+      const wasActive = rowIsActive(planRows[0])
       await pool.query("UPDATE plans SET active = FALSE WHERE id = ?", [id])
       return res.json({
         success: true,
@@ -216,8 +228,8 @@ export const togglePlanStatus = async (req, res) => {
         message: "Plan no encontrado",
       })
     }
-    const nextActive = !rows[0].active
-    await pool.query("UPDATE plans SET active = ? WHERE id = ?", [nextActive, id])
+    const nextActive = !rowIsActive(rows[0])
+    await pool.query("UPDATE plans SET active = ? WHERE id = ?", [nextActive ? 1 : 0, id])
     const [updated] = await pool.query("SELECT * FROM plans WHERE id = ?", [id])
     const [withInstructors] = await attachInstructorsToPlans(updated)
     res.json({
