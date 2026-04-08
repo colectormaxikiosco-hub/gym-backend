@@ -237,21 +237,10 @@ export const createMembership = async (req, res) => {
     )
     const hasLongActiveMembership = existingCurrent.some((row) => (Number(row.duration_days) || 0) >= 10)
 
-    if (existingCurrent.length > 0 && !isNewPlanClass) {
-      const currentEnd = existingCurrent[0].end_date ? String(existingCurrent[0].end_date).split("T")[0] : null
-      const newStart = start_date ? String(start_date).split("T")[0] : null
-      const isRenewal = currentEnd && newStart && currentEnd === newStart
-      if (!isRenewal) {
-        await connection.rollback()
-        return res.status(400).json({
-          success: false,
-          message:
-            "El cliente ya tiene una membresía en vigor. Para renovar o cambiar, la nueva membresía debe comenzar el mismo día en que vence la actual (" +
-            currentEnd +
-            "). Si querés agregar solo una clase (plan por día), podés hacerlo sin perder la membresía actual.",
-        })
-      }
-    }
+    // Permitir renovación/cambio anticipado:
+    // si el cliente ya tiene una membresía activa en vigor, también puede comprar otra
+    // con fecha de inicio hoy (fecha de pago) u otra fecha elegida por el usuario.
+    // Esto evita bloquear renovaciones anticipadas.
     if (existingCurrent.length > 0 && isNewPlanClass && hasLongActiveMembership) {
       // Cliente con membresía larga (ej. mensual) puede agregar una clase (plan corto) sin perder la actual
       // No bloquear; permitir crear la nueva membresía de clase

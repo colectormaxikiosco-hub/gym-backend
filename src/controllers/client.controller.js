@@ -102,7 +102,9 @@ export const getAllClients = async (req, res, next) => {
         clientIds,
       )
       const membershipByClient = {}
+      const activeCountByClient = {}
       activeRows.forEach((row) => {
+        activeCountByClient[row.client_id] = (activeCountByClient[row.client_id] || 0) + 1
         if (!membershipByClient[row.client_id]) {
           membershipByClient[row.client_id] = {
             membership_id: row.membership_id,
@@ -119,6 +121,7 @@ export const getAllClients = async (req, res, next) => {
       })
       clients.forEach((c) => {
         c.active_membership = membershipByClient[c.id] || null
+        c.active_membership_count = activeCountByClient[c.id] || 0
       })
 
       const clientIdsWithoutActive = clientIds.filter((id) => !membershipByClient[id])
