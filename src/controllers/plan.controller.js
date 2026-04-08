@@ -88,11 +88,22 @@ export const getPlanById = async (req, res) => {
 export const createPlan = async (req, res) => {
   try {
     const { name, duration_days, duration_hours, price, description, instructor_ids } = req.body
+    const normalizedName = String(name || "").trim()
+    const [activeDuplicate] = await pool.query(
+      "SELECT id FROM plans WHERE name = ? AND active = TRUE LIMIT 1",
+      [normalizedName],
+    )
+    if (activeDuplicate.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Ya existe un plan activo con ese nombre",
+      })
+    }
     const days = duration_days != null ? Number(duration_days) : 0
     const hours = duration_hours != null ? Number(duration_hours) : 0
     const [result] = await pool.query(
       "INSERT INTO plans (name, duration_days, duration_hours, price, description) VALUES (?, ?, ?, ?, ?)",
-      [name, days, hours || null, price, description || null]
+      [normalizedName, days, hours || null, price, description || null]
     )
     const planId = result.insertId
     const ids = Array.isArray(instructor_ids) ? instructor_ids.map((id) => Number(id)).filter((id) => id > 0) : []
@@ -115,7 +126,7 @@ export const createPlan = async (req, res) => {
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(400).json({
         success: false,
-        message: "Ya existe un plan con ese nombre",
+        message: "Ya existe un plan activo con ese nombre",
       })
     }
     res.status(500).json({
@@ -130,15 +141,16 @@ export const updatePlan = async (req, res) => {
     const { id } = req.params
     const { name, duration_days, duration_hours, price, description, active, instructor_ids } = req.body
     const normalizedName = String(name || "").trim()
+    const nextActive = active !== undefined ? Boolean(active) : true
 
     const [existingByName] = await pool.query(
-      "SELECT id FROM plans WHERE name = ? AND id <> ? LIMIT 1",
+      "SELECT id FROM plans WHERE name = ? AND active = TRUE AND id <> ? LIMIT 1",
       [normalizedName, id],
     )
-    if (existingByName.length > 0) {
+    if (nextActive && existingByName.length > 0) {
       return res.status(400).json({
         success: false,
-        message: "Ya existe otro plan con ese nombre",
+        message: "Ya existe otro plan activo con ese nombre",
       })
     }
 
@@ -146,7 +158,7 @@ export const updatePlan = async (req, res) => {
     const hours = duration_hours != null ? Number(duration_hours) : 0
     const [result] = await pool.query(
       "UPDATE plans SET name = ?, duration_days = ?, duration_hours = ?, price = ?, description = ?, active = ? WHERE id = ?",
-      [normalizedName, days, hours || null, price, description, active !== undefined ? active : true, id]
+      [normalizedName, days, hours || null, price, description, nextActive, id]
     )
     if (result.affectedRows === 0) {
       return res.status(404).json({
@@ -176,7 +188,7 @@ export const updatePlan = async (req, res) => {
     if (error.code === "ER_DUP_ENTRY") {
       return res.status(400).json({
         success: false,
-        message: "Ya existe otro plan con ese nombre",
+        message: "Ya existe otro plan activo con ese nombre",
       })
     }
     res.status(500).json({
@@ -248,6 +260,18 @@ export const togglePlanStatus = async (req, res) => {
       })
     }
     const nextActive = !rowIsActive(rows[0])
+    if (nextActive) {
+      const [activeDuplicate] = await pool.query(
+        "SELECT id FROM plans WHERE name = ? AND active = TRUE AND id <> ? LIMIT 1",
+        [rows[0].name, id],
+      )
+      if (activeDuplicate.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Ya existe otro plan activo con ese nombre. Cambiá el nombre antes de activarlo.",
+        })
+      }
+    }
     await pool.query("UPDATE plans SET active = ? WHERE id = ?", [nextActive ? 1 : 0, id])
     const [updated] = await pool.query("SELECT * FROM plans WHERE id = ?", [id])
     const [withInstructors] = await attachInstructorsToPlans(updated)
