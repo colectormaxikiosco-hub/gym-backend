@@ -67,7 +67,7 @@ export const getAllClients = async (req, res, next) => {
     } else if (filterExpired) {
       daysRemainingCondition = ` AND c.id IN (SELECT client_id FROM memberships WHERE status = 'expired') AND c.id NOT IN ${activeMembershipSubquery}`
     }
-    const baseSelect = `SELECT c.id, c.username, c.name, c.phone, c.dni, 
+    const baseSelect = `SELECT c.id, c.username, c.name, c.phone, c.dni, c.birth_date,
        c.active, c.created_at, c.last_login, u.name as created_by_name,
        ${balanceSubquery} as balance
        ${baseFrom}
@@ -179,7 +179,7 @@ export const getClientById = async (req, res, next) => {
     const { id } = req.params
 
     const [clients] = await pool.query(
-      `SELECT c.id, c.username, c.name, c.phone, c.address, c.dni, 
+      `SELECT c.id, c.username, c.name, c.phone, c.address, c.dni, c.birth_date,
        c.emergency_contact, c.emergency_phone, c.active, 
        c.created_at, c.last_login, u.name as created_by_name
        FROM clients c
@@ -208,7 +208,7 @@ export const getClientById = async (req, res, next) => {
 // Crear nuevo cliente
 export const createClient = async (req, res, next) => {
   try {
-    const { username, password, name, phone, dni, address, emergency_contact, emergency_phone } = req.body
+    const { username, password, name, phone, dni, address, emergency_contact, emergency_phone, birth_date } = req.body
     const createdBy = req.user.id
 
     if (!username || !password || !name || !dni) {
@@ -248,13 +248,13 @@ export const createClient = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10)
 
     const [result] = await pool.query(
-      `INSERT INTO clients (username, password, name, phone, dni, address, emergency_contact, emergency_phone, created_by) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [username, hashedPassword, name, phone, dni, address, emergency_contact, emergency_phone, createdBy],
+      `INSERT INTO clients (username, password, name, phone, dni, birth_date, address, emergency_contact, emergency_phone, created_by) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [username, hashedPassword, name, phone, dni, birth_date ?? null, address, emergency_contact, emergency_phone, createdBy],
     )
 
     const [newClient] = await pool.query(
-      "SELECT id, username, name, phone, dni, active, created_at FROM clients WHERE id = ?",
+      "SELECT id, username, name, phone, dni, birth_date, active, created_at FROM clients WHERE id = ?",
       [result.insertId],
     )
 
@@ -273,7 +273,7 @@ export const createClient = async (req, res, next) => {
 export const updateClient = async (req, res, next) => {
   try {
     const { id } = req.params
-    const { username, name, phone, dni, address, emergency_contact, emergency_phone, active } = req.body
+    const { username, name, phone, dni, address, emergency_contact, emergency_phone, active, birth_date } = req.body
 
     if (!username || !name || !dni) {
       return res.status(400).json({
@@ -301,15 +301,25 @@ export const updateClient = async (req, res, next) => {
       })
     }
 
-    await pool.query(
-      `UPDATE clients SET username = ?, name = ?, phone = ?, dni = ?, 
-       address = ?, emergency_contact = ?, emergency_phone = ?, active = ? 
-       WHERE id = ?`,
-      [username, name, phone, dni, address, emergency_contact, emergency_phone, active !== undefined ? active : true, id],
-    )
+    const activeVal = active !== undefined ? active : true
+    if (birth_date !== undefined) {
+      await pool.query(
+        `UPDATE clients SET username = ?, name = ?, phone = ?, dni = ?, birth_date = ?,
+         address = ?, emergency_contact = ?, emergency_phone = ?, active = ? 
+         WHERE id = ?`,
+        [username, name, phone, dni, birth_date, address, emergency_contact, emergency_phone, activeVal, id],
+      )
+    } else {
+      await pool.query(
+        `UPDATE clients SET username = ?, name = ?, phone = ?, dni = ?, 
+         address = ?, emergency_contact = ?, emergency_phone = ?, active = ? 
+         WHERE id = ?`,
+        [username, name, phone, dni, address, emergency_contact, emergency_phone, activeVal, id],
+      )
+    }
 
     const [updatedClient] = await pool.query(
-      "SELECT id, username, name, phone, dni, active, created_at, last_login FROM clients WHERE id = ?",
+      "SELECT id, username, name, phone, dni, birth_date, active, created_at, last_login FROM clients WHERE id = ?",
       [id],
     )
 
@@ -416,7 +426,7 @@ export const getMyProfile = async (req, res, next) => {
     const clientId = req.user.id
 
     const [clients] = await pool.query(
-      `SELECT id, username, name, phone, address, dni, 
+      `SELECT id, username, name, phone, address, dni, birth_date,
        emergency_contact, emergency_phone, created_at, last_login 
        FROM clients WHERE id = ? AND active = 1`,
       [clientId],
@@ -470,7 +480,7 @@ export const getMyProfile = async (req, res, next) => {
 export const updateMyProfile = async (req, res, next) => {
   try {
     const clientId = req.user.id
-    const { username, name, phone, address, emergency_contact, emergency_phone } = req.body
+    const { username, name, phone, address, emergency_contact, emergency_phone, birth_date } = req.body
 
     if (!username || !name) {
       return res.status(400).json({
@@ -491,13 +501,20 @@ export const updateMyProfile = async (req, res, next) => {
       })
     }
 
-    await pool.query(
-      "UPDATE clients SET username = ?, name = ?, phone = ?, address = ?, emergency_contact = ?, emergency_phone = ? WHERE id = ?",
-      [username, name, phone, address, emergency_contact, emergency_phone, clientId],
-    )
+    if (Object.prototype.hasOwnProperty.call(req.body, "birth_date")) {
+      await pool.query(
+        "UPDATE clients SET username = ?, name = ?, phone = ?, address = ?, emergency_contact = ?, emergency_phone = ?, birth_date = ? WHERE id = ?",
+        [username, name, phone, address, emergency_contact, emergency_phone, birth_date ?? null, clientId],
+      )
+    } else {
+      await pool.query(
+        "UPDATE clients SET username = ?, name = ?, phone = ?, address = ?, emergency_contact = ?, emergency_phone = ? WHERE id = ?",
+        [username, name, phone, address, emergency_contact, emergency_phone, clientId],
+      )
+    }
 
     const [updatedClient] = await pool.query(
-      "SELECT id, username, name, phone, address, emergency_contact, emergency_phone FROM clients WHERE id = ?",
+      "SELECT id, username, name, phone, address, birth_date, emergency_contact, emergency_phone FROM clients WHERE id = ?",
       [clientId],
     )
 

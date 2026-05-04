@@ -11,12 +11,12 @@ import {
   changeMyPassword,
 } from "../controllers/client.controller.js"
 import { authenticate, requireRole } from "../middleware/auth.js"
-import { validateCreateClient, validateUpdateClient } from "../middleware/validate.js"
+import { validateCreateClient, validateUpdateClient, validateUpdateMyProfileClient } from "../middleware/validate.js"
 
 const router = express.Router()
 
 router.get("/my-profile", authenticate, requireRole(["client"]), getMyProfile)
-router.put("/my-profile", authenticate, requireRole(["client"]), updateMyProfile)
+router.put("/my-profile", authenticate, requireRole(["client"]), validateUpdateMyProfileClient, updateMyProfile)
 router.post("/my-profile/change-password", authenticate, requireRole(["client"]), changeMyPassword)
 
 // Rutas para usuarios del sistema (gestión de clientes)

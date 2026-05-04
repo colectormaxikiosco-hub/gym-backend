@@ -1,5 +1,38 @@
 import { validationResult } from "express-validator"
 
+/**
+ * Valida fecha de nacimiento opcional. Devuelve { ok, value } con value = "YYYY-MM-DD" o null.
+ */
+export const normalizeOptionalBirthDate = (raw) => {
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return { ok: true, value: null }
+  }
+  const s = String(raw).trim().split("T")[0]
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) {
+    return { ok: false, message: "La fecha de nacimiento no es válida. Usá formato AAAA-MM-DD." }
+  }
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  const d = Number(m[3])
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) {
+    return { ok: false, message: "La fecha de nacimiento no es válida." }
+  }
+  const date = new Date(y, mo - 1, d)
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) {
+    return { ok: false, message: "La fecha de nacimiento no es válida." }
+  }
+  const today = new Date()
+  today.setHours(23, 59, 59, 999)
+  if (date > today) {
+    return { ok: false, message: "La fecha de nacimiento no puede ser futura." }
+  }
+  if (y < 1900) {
+    return { ok: false, message: "La fecha de nacimiento no es válida." }
+  }
+  return { ok: true, value: s }
+}
+
 export const validate = (req, res, next) => {
   const errors = validationResult(req)
 
@@ -129,6 +162,15 @@ export const validateCreateClient = (req, res, next) => {
     })
   }
 
+  const birthResult = normalizeOptionalBirthDate(req.body.birth_date)
+  if (!birthResult.ok) {
+    return res.status(400).json({
+      success: false,
+      message: birthResult.message,
+    })
+  }
+  req.body.birth_date = birthResult.value
+
   next()
 }
 
@@ -154,6 +196,49 @@ export const validateUpdateClient = (req, res, next) => {
       success: false,
       message: "El DNI es requerido",
     })
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, "birth_date")) {
+    const birthResult = normalizeOptionalBirthDate(req.body.birth_date)
+    if (!birthResult.ok) {
+      return res.status(400).json({
+        success: false,
+        message: birthResult.message,
+      })
+    }
+    req.body.birth_date = birthResult.value
+  }
+
+  next()
+}
+
+/** Perfil del cliente (portal): usuario, nombre y fecha de nacimiento opcional validada */
+export const validateUpdateMyProfileClient = (req, res, next) => {
+  const { username, name } = req.body
+
+  if (!username || username.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "El nombre de usuario es requerido",
+    })
+  }
+
+  if (!name || name.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: "El nombre es requerido",
+    })
+  }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, "birth_date")) {
+    const birthResult = normalizeOptionalBirthDate(req.body.birth_date)
+    if (!birthResult.ok) {
+      return res.status(400).json({
+        success: false,
+        message: birthResult.message,
+      })
+    }
+    req.body.birth_date = birthResult.value
   }
 
   next()

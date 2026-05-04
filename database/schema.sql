@@ -37,6 +37,7 @@ CREATE TABLE clients (
   phone VARCHAR(20),
   address TEXT,
   dni VARCHAR(20) UNIQUE,
+  birth_date DATE NULL DEFAULT NULL,
   emergency_contact VARCHAR(100),
   emergency_phone VARCHAR(20),
   active BOOLEAN DEFAULT TRUE,
