@@ -410,17 +410,25 @@ export const createStockMovement = async (req, res) => {
     }
 
     const currentStock = Number(products[0].stock)
-    let delta = Number(quantity)
-    if (isNaN(delta) || delta === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "La cantidad debe ser distinta de cero",
-      })
-    }
+    let delta
 
     if (type === "entrada") {
+      delta = Number(quantity)
+      if (isNaN(delta) || delta === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "La cantidad debe ser distinta de cero",
+        })
+      }
       if (delta < 0) delta = -delta
     } else if (type === "salida") {
+      delta = Number(quantity)
+      if (isNaN(delta) || delta === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "La cantidad debe ser distinta de cero",
+        })
+      }
       if (delta > 0) delta = -delta
       if (currentStock + delta < 0) {
         return res.status(400).json({
@@ -429,13 +437,26 @@ export const createStockMovement = async (req, res) => {
         })
       }
     } else if (type === "ajuste") {
-      // ajuste: delta puede ser + o -; el usuario indica la diferencia
-      if (currentStock + delta < 0) {
+      // quantity = stock físico objetivo (inventario real); el movimiento guarda la diferencia
+      const targetStock = Number(quantity)
+      if (isNaN(targetStock) || targetStock < 0) {
         return res.status(400).json({
           success: false,
-          message: "El stock resultante no puede ser negativo",
+          message: "El stock objetivo del ajuste debe ser un número mayor o igual a 0.",
         })
       }
+      delta = targetStock - currentStock
+      if (delta === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "El stock ya coincide con el valor indicado. No se registró ningún movimiento.",
+        })
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Tipo de movimiento no válido",
+      })
     }
 
     await pool.query(

@@ -597,7 +597,15 @@ export const validateStockMovement = (req, res, next) => {
     })
   }
   const qty = Number(quantity)
-  if (isNaN(qty) || qty === 0) {
+  if (type === "ajuste") {
+    // Ajuste: quantity = stock físico objetivo (puede ser 0)
+    if (isNaN(qty) || qty < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "En ajuste, indicá el stock real contado (número mayor o igual a 0).",
+      })
+    }
+  } else if (isNaN(qty) || qty === 0) {
     return res.status(400).json({
       success: false,
       message: "La cantidad debe ser un número distinto de cero",
