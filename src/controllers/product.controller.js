@@ -1,9 +1,17 @@
 import pool from "../config/database.js"
 
+/** active_filter: "active" (default) | "inactive" | "all" */
+const activeFilterSql = (activeFilter) => {
+  const f = String(activeFilter || "active").toLowerCase()
+  if (f === "inactive") return " AND active = FALSE"
+  if (f === "all") return ""
+  return " AND active = TRUE"
+}
+
 export const getAllProducts = async (req, res) => {
   try {
-    const { search, category, stock_order, price_min, price_max } = req.query
-    let sql = "SELECT * FROM products WHERE active = TRUE"
+    const { search, category, stock_order, price_min, price_max, active_filter } = req.query
+    let sql = `SELECT * FROM products WHERE 1=1${activeFilterSql(active_filter)}`
     const params = []
 
     if (search && search.trim()) {
@@ -273,9 +281,53 @@ export const updateProduct = async (req, res) => {
   }
 }
 
+/** Desactiva el producto (soft delete). Conserva ventas, movimientos e historial. */
 export const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params
+
+    const [product] = await pool.query("SELECT id, active FROM products WHERE id = ?", [id])
+    if (product.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Producto no encontrado",
+      })
+    }
+
+    if (!product[0].active) {
+      return res.status(400).json({
+        success: false,
+        message: "El producto ya está desactivado",
+      })
+    }
+
+    await pool.query("UPDATE products SET active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id])
+    res.json({
+      success: true,
+      message: "Producto desactivado correctamente. Ya no aparecerá en ventas ni en el stock activo.",
+    })
+  } catch (error) {
+    console.error("Error al desactivar producto:", error)
+    res.status(500).json({
+      success: false,
+      message: "Error al desactivar producto",
+    })
+  }
+}
+
+export const setProductActive = async (req, res) => {
+  try {
+    const { id } = req.params
+    const { active } = req.body
+
+    if (active !== true && active !== false && active !== 1 && active !== 0) {
+      return res.status(400).json({
+        success: false,
+        message: "El campo active debe ser true o false",
+      })
+    }
+
+    const activeVal = active === true || active === 1
 
     const [product] = await pool.query("SELECT id FROM products WHERE id = ?", [id])
     if (product.length === 0) {
@@ -285,29 +337,22 @@ export const deleteProduct = async (req, res) => {
       })
     }
 
-    const [sales] = await pool.query(
-      "SELECT id FROM sale_items WHERE product_id = ? LIMIT 1",
-      [id]
-    )
-    if (sales.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "No se puede eliminar el producto porque tiene ventas asociadas. Solo se pueden eliminar productos sin ventas.",
-      })
-    }
+    await pool.query("UPDATE products SET active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+      activeVal,
+      id,
+    ])
 
-    // Borrar primero los movimientos de stock para evitar error de FK (RESTRICT)
-    await pool.query("DELETE FROM stock_movements WHERE product_id = ?", [id])
-    await pool.query("DELETE FROM products WHERE id = ?", [id])
+    const [updated] = await pool.query("SELECT * FROM products WHERE id = ?", [id])
     res.json({
       success: true,
-      message: "Producto eliminado correctamente",
+      message: activeVal ? "Producto reactivado correctamente" : "Producto desactivado correctamente",
+      data: updated[0],
     })
   } catch (error) {
-    console.error("Error al eliminar producto:", error)
+    console.error("Error al cambiar estado del producto:", error)
     res.status(500).json({
       success: false,
-      message: "Error al eliminar producto",
+      message: "Error al actualizar el estado del producto",
     })
   }
 }
@@ -346,7 +391,7 @@ export const getAllMovements = async (req, res) => {
       FROM stock_movements sm
       INNER JOIN products p ON p.id = sm.product_id
       LEFT JOIN users u ON u.id = sm.created_by
-      WHERE p.active = TRUE
+      WHERE 1=1
     `
     let whereSql = ""
     const params = []
@@ -401,11 +446,17 @@ export const createStockMovement = async (req, res) => {
     const { product_id, type, quantity, notes } = req.body
     const userId = req.user.id
 
-    const [products] = await pool.query("SELECT id, stock FROM products WHERE id = ? AND active = TRUE", [product_id])
+    const [products] = await pool.query("SELECT id, stock, active FROM products WHERE id = ?", [product_id])
     if (products.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Producto no encontrado",
+      })
+    }
+    if (!products[0].active) {
+      return res.status(400).json({
+        success: false,
+        message: "El producto está desactivado. Reactivalo para registrar movimientos de stock.",
       })
     }
 

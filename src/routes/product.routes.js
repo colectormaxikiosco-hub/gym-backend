@@ -6,6 +6,7 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
+  setProductActive,
   getMovementsByProductId,
   getAllMovements,
   createStockMovement,
@@ -26,6 +27,7 @@ router.get("/:id", verifyAuth, verifyAdminOrEmployee, getProductById)
 
 // Crear, editar, eliminar y movimientos: solo admin
 router.post("/", verifyAuth, verifyAdmin, validateProduct, createProduct)
+router.patch("/:id/status", verifyAuth, verifyAdmin, setProductActive)
 router.put("/:id", verifyAuth, verifyAdmin, validateProduct, updateProduct)
 router.delete("/:id", verifyAuth, verifyAdmin, deleteProduct)
 router.get("/:productId/movements", verifyAuth, verifyAdmin, getMovementsByProductId)
