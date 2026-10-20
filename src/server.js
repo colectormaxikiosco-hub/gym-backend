@@ -15,6 +15,7 @@ import currentAccountRoutes from "./routes/currentAccount.routes.js"
 import entryRoutes from "./routes/entry.routes.js"
 import instructorRoutes from "./routes/instructor.routes.js"
 import productRoutes from "./routes/product.routes.js"
+import stockControlRoutes from "./routes/stockControl.routes.js"
 import categoryRoutes from "./routes/category.routes.js"
 import salesRoutes from "./routes/sales.routes.js"
 import reportsRoutes from "./routes/reports.routes.js"
@@ -98,6 +99,7 @@ app.use("/api/current-account", currentAccountRoutes)
 app.use("/api/entries", entryRoutes)
 app.use("/api/instructors", instructorRoutes)
 app.use("/api/products", productRoutes)
+app.use("/api/stock-controls", stockControlRoutes)
 app.use("/api/categories", categoryRoutes)
 app.use("/api/sales", salesRoutes)
 app.use("/api/reports", reportsRoutes)

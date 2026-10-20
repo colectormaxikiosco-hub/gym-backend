@@ -1,4 +1,5 @@
 import pool from "../config/database.js"
+import { ensureControlForSession } from "./stockControl.controller.js"
 
 // Obtener sesión activa
 export const getActiveSession = async (req, res) => {
@@ -32,9 +33,21 @@ export const getActiveSession = async (req, res) => {
       [sessions[0].id],
     )
 
+    await ensureControlForSession(pool, sessions[0].id)
+    const [stockControls] = await pool.query(
+      `SELECT sc.*, up.name AS performed_by_name, usk.name AS skipped_by_name
+       FROM stock_controls sc
+       LEFT JOIN users up ON up.id = sc.performed_by
+       LEFT JOIN users usk ON usk.id = sc.skipped_by
+       WHERE sc.cash_session_id = ?
+       LIMIT 1`,
+      [sessions[0].id],
+    )
+
     const sessionData = {
       ...sessions[0],
       movements,
+      stock_control: stockControls[0] || null,
     }
 
     console.log("[v0] Active session found:", sessionData.id)
@@ -83,6 +96,8 @@ export const openCashSession = async (req, res) => {
       [user_id, opening_amount || 0, notes || null],
     )
 
+    await ensureControlForSession(connection, result.insertId)
+
     // Obtener la sesión creada
     const [newSession] = await connection.query(
       `SELECT cs.*, u.username, u.name as user_name 
@@ -121,8 +136,9 @@ export const closeCashSession = async (req, res) => {
     await connection.beginTransaction()
     console.log("[v0] Closing cash session")
 
-    const { closing_amount, closing_cash, closing_transfer, closing_card, notes } = req.body
+    const { closing_amount, closing_cash, closing_transfer, closing_card, notes, skip_stock_control } = req.body
     const sessionId = req.params.id
+    const userId = req.user.id
 
     const cash = closing_cash != null ? Number.parseFloat(closing_cash) : null
     const transfer = closing_transfer != null ? Number.parseFloat(closing_transfer) : null
@@ -167,6 +183,32 @@ export const closeCashSession = async (req, res) => {
     const openingAmount = Number.parseFloat(sessions[0].opening_amount)
     const expectedAmount = openingAmount + totalIncome - totalExpense
     const difference = finalClosingAmount - expectedAmount
+
+    // Control de stock del turno: debe estar hecho u omitido de forma explícita
+    const controlId = await ensureControlForSession(connection, sessionId)
+    const [stockControls] = await connection.query(
+      "SELECT id, status FROM stock_controls WHERE id = ? FOR UPDATE",
+      [controlId],
+    )
+    const stockStatus = stockControls[0]?.status || "pending"
+    if (stockStatus === "pending") {
+      if (skip_stock_control === true || skip_stock_control === 1 || skip_stock_control === "true") {
+        await connection.query(
+          `UPDATE stock_controls
+           SET status = 'skipped', skipped_by = ?, skipped_at = NOW(), updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [userId, controlId],
+        )
+      } else {
+        await connection.rollback()
+        return res.status(400).json({
+          success: false,
+          message:
+            "No se realizó el control de stock en este turno. Realizalo o confirmá el cierre sin control.",
+          code: "STOCK_CONTROL_REQUIRED",
+        })
+      }
+    }
 
     // Cerrar sesión (incluye montos por método si se enviaron)
     await connection.query(
@@ -290,9 +332,15 @@ export const getCashSessions = async (req, res) => {
         (SELECT COALESCE(SUM(CASE WHEN cm.type IN ('income', 'membership_payment', 'sale') THEN cm.amount ELSE 0 END), 0)
          FROM cash_movements cm WHERE cm.cash_session_id = cs.id) as total_income,
         (SELECT COALESCE(SUM(CASE WHEN cm.type = 'expense' THEN cm.amount ELSE 0 END), 0)
-         FROM cash_movements cm WHERE cm.cash_session_id = cs.id) as total_expenses
+         FROM cash_movements cm WHERE cm.cash_session_id = cs.id) as total_expenses,
+        sc.id as stock_control_id,
+        sc.status as stock_control_status,
+        sc.products_count as stock_control_products_count,
+        sc.shortage_count as stock_control_shortage_count,
+        sc.surplus_count as stock_control_surplus_count
        FROM cash_sessions cs
        JOIN users u ON cs.user_id = u.id
+       LEFT JOIN stock_controls sc ON sc.cash_session_id = cs.id
        WHERE cs.status = 'closed'
        ORDER BY cs.closed_at DESC, cs.opened_at DESC`,
     )
@@ -355,6 +403,16 @@ export const getCashSessionDetail = async (req, res) => {
       [sessionId],
     )
 
+    const [stockControls] = await pool.query(
+      `SELECT sc.*, up.name AS performed_by_name, usk.name AS skipped_by_name
+       FROM stock_controls sc
+       LEFT JOIN users up ON up.id = sc.performed_by
+       LEFT JOIN users usk ON usk.id = sc.skipped_by
+       WHERE sc.cash_session_id = ?
+       LIMIT 1`,
+      [sessionId],
+    )
+
     const totalIncome = Number(totals[0]?.total_income) || 0
     const totalExpenses = Number(totals[0]?.total_expenses) || 0
 
@@ -363,6 +421,7 @@ export const getCashSessionDetail = async (req, res) => {
       total_income: totalIncome,
       total_expenses: totalExpenses,
       movements,
+      stock_control: stockControls[0] || null,
     }
 
     console.log("[v0] Session detail retrieved:", sessionId)
